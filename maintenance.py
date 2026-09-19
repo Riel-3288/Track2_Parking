@@ -51,10 +51,10 @@ ZONE_EXIT_GATES = {"gate2": 1, "gate4": 2, "gate6": 3}
 
 # Maintenance Thresholds
 MAINTENANCE_THRESHOLDS = {
-    "spot_cycles": 7,        # Service bay after 7 parkings
+    "spot_cycles": 2,        # Service bay after 2 parkings
     "gate_cycles": 7,        # Service gate after 7 operations
-    "fan_run_seconds": 180,  # Service fan after 3 mins
-    "light_run_seconds": 240 # Service light after 4 mins
+    "fan_run_seconds": 2700,  # Service fan after 45min 
+    "light_run_seconds":2700  # Service light after 45min
 }
 
 jwt_token = None
