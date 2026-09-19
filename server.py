@@ -7,6 +7,7 @@ import config
 import auth
 import database
 import simulator
+import math
 
 app = Flask(__name__)
 app.secret_key = "ctrl_alt_everything_super_secret_key" 
@@ -73,15 +74,30 @@ def webhook_listener():
 
         # C1. Car physically enters parking bay -> Capture exact planned stay if updated!
         elif spot_type == "Park" and direction == "CarIn":
-            if planned_duration > 0:
+
                 car_info = config.active_cars.setdefault(raw_plate, {})
-                car_info["duration"] = planned_duration
+
+                # Start actual parking timer when car completely enters the parking bay
+                car_info["parking_start_time"] = time.time()
+
                 print(f"[PARK DOCKED] '{raw_plate}' parked in '{spot_name}'. Simulator stay duration: {planned_duration} mins.")
 
         # C2. Finished parking & leaves bay -> Direct to EXIT & release reservation
         elif spot_type == "Park" and direction == "CarOut":
+
+            car_info = config.active_cars.get(raw_plate, {})
+
+            start_time = car_info.get("parking_start_time")
+
+            if start_time:
+                parking_seconds = time.time() - start_time
+                parking_minutes = parking_seconds / 60
+                car_info["actual_duration"] = parking_minutes
+                print(f"actual parking duration for '{raw_plate}' was {parking_minutes:.2f} mins.")
+
             with config.state_lock:
                 config.reserved_spots.discard(spot_name)
+
             print(f"\n[PARK FINISHED] '{raw_plate}' left bay '{spot_name}'. Directing to EXIT...")
             simulator.call_simulator_api("POST", f"/car/{nospace_plate}/goto/exit")
 
@@ -90,12 +106,13 @@ def webhook_listener():
             simulator.safe_close_gate(config.exit_gate_name)
 
             car_info = config.active_cars.get(raw_plate, {})
-            duration = max(1, int(car_info.get("duration", 1)))
+            duration = max(1, math.ceil(car_info.get("actual_duration", 1)))
             is_electric = (car_info.get("type") == "Electric")
 
             parking_cost = float(duration)
-            charging_cost = float(duration * 2) if is_electric else 0.0
+            charging_cost = float(duration) if is_electric else 0.0
             total_fee = parking_cost + charging_cost
+            print(f"The total fee for '{raw_plate}' is ${total_fee:.2f} (Parking=${parking_cost:.2f}, Charging=${charging_cost:.2f})")
 
             car_info["parking_cost"] = parking_cost
             car_info["charging_cost"] = charging_cost
@@ -167,6 +184,7 @@ def webhook_listener():
 
     # 4. Carbon Monoxide safety
     elif event_class == "carbon_monoxide_event":
+
         danger = data.get("DangerLevel")
         if danger in ["Mid", "High", "Critical"]:
             for fan in config.exhaust_fans or ["fan0"]:
@@ -337,5 +355,7 @@ if __name__ == "__main__":
     print("  Exit Time & Fee Logging Active | Dashboard Synchronized")
     print("  Live Command Center: http://127.0.0.1:5000")
     print("=" * 65)
+
+    simulator.handle_carbon_monoxide_event("Safe")
 
     app.run(host="0.0.0.0", port=5000, debug=False)
