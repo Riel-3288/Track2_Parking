@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 import hashlib
@@ -10,12 +11,14 @@ import requests
 app = Flask(__name__)
 
 # ==============================================================================
-# CONFIGURATION
+# CONFIGURATION & ABSOLUTE PATHS
 # ==============================================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, "parking.db")
+
 SIMULATOR_BASE_URL = "http://127.0.0.1:9898/api/v1"
 ADMIN_NAME = "admin"
 ADMIN_PASS = "admin"
-DB_FILE = "parking.db"
 
 jwt_token = None
 auth_lock = threading.Lock()
@@ -47,15 +50,11 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         reason TEXT, fine_amount REAL, timestamp TEXT
     )''')
-    # Clean up past unclosed rows so dashboard looks clean immediately
-    c.execute('''UPDATE car_logs 
-                 SET exit_time = datetime('now', 'localtime'),
-                     parking_cost = 1.0, charging_cost = 0.0, total_paid = 1.0, status = 'Completed'
-                 WHERE exit_time IS NULL AND status = 'Completed' ''')
     conn.commit()
     conn.close()
 
 def log_car_entry(plate, car_type, spot):
+    """Logs when a car arrives and parks."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''INSERT INTO car_logs (plate, car_type, spot_name, entry_time, status)
@@ -65,21 +64,33 @@ def log_car_entry(plate, car_type, spot):
     conn.close()
 
 def log_car_exit(plate, p_cost, c_cost, total):
-    """Updates database with exit timestamp, calculated fees, and marks Completed."""
+    """
+    Updates the car with exit timestamp and fee.
+    If the car had no entry record (parked before boot), it automatically inserts it as Completed!
+    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('''UPDATE car_logs 
-                 SET exit_time = datetime('now', 'localtime'),
-                     parking_cost = ?, charging_cost = ?, total_paid = ?, status = 'Completed'
-                 WHERE id = (
-                     SELECT id FROM car_logs 
-                     WHERE TRIM(UPPER(plate)) = TRIM(UPPER(?)) 
-                     ORDER BY id DESC LIMIT 1
-                 )''',
-              (p_cost, c_cost, total, plate.strip()))
+    clean_plate = plate.strip()
+
+    c.execute('''SELECT id FROM car_logs 
+                 WHERE TRIM(UPPER(plate)) = TRIM(UPPER(?)) 
+                 ORDER BY id DESC LIMIT 1''', (clean_plate,))
+    row = c.fetchone()
+
+    if row:
+        c.execute('''UPDATE car_logs 
+                     SET exit_time = datetime('now', 'localtime'),
+                         parking_cost = ?, charging_cost = ?, total_paid = ?, status = 'Completed'
+                     WHERE id = ?''',
+                  (p_cost, c_cost, total, row[0]))
+    else:
+        c.execute('''INSERT INTO car_logs (plate, car_type, spot_name, entry_time, exit_time, parking_cost, charging_cost, total_paid, status)
+                     VALUES (?, 'Normal', 'Exit', datetime('now', '-2 minutes', 'localtime'), datetime('now', 'localtime'), ?, ?, ?, 'Completed')''',
+                  (clean_plate, p_cost, c_cost, total))
+
     conn.commit()
     conn.close()
-    print(f"[DB LOGGED] Exit time & fee saved for '{plate}': ${total:.2f}")
+    print(f"[DB LOGGED] Exit time & fee saved for '{clean_plate}': ${total:.2f} (Status: Completed)")
 
 def log_penalty(reason, fine):
     conn = sqlite3.connect(DB_FILE)
@@ -106,7 +117,6 @@ def is_spot_empty(spot):
 # SIMULATOR API CLIENT (JWT AUTHENTICATED)
 # ==============================================================================
 def login_to_simulator():
-    """Logs in using credentials and caches Bearer JWT token."""
     global jwt_token
     with auth_lock:
         url = f"{SIMULATOR_BASE_URL}/auth/login"
@@ -124,7 +134,6 @@ def login_to_simulator():
 
 
 def call_simulator_api(method, endpoint, payload=None, params=None):
-    """Sends authenticated HTTP requests to the simulator."""
     global jwt_token
     if not jwt_token and not login_to_simulator():
         return None
@@ -154,10 +163,9 @@ def call_simulator_api(method, endpoint, payload=None, params=None):
 
 
 # ==============================================================================
-# SMART SELF-REPAIRING GATE CONTROLLER (WITH TIMED DELAYS)
+# SMART SELF-REPAIRING GATE CONTROLLER
 # ==============================================================================
 def safe_open_gate(gate_name):
-    """Inspects gate health before opening. Auto-repairs if worn out."""
     barriers = call_simulator_api("GET", "/list-barriers")
     if isinstance(barriers, list):
         for b in barriers:
@@ -171,13 +179,11 @@ def safe_open_gate(gate_name):
 
 
 def safe_close_gate(gate_name):
-    """Ensures gate closes cleanly."""
     print(f"[GATE] Lowering barrier '{gate_name}'...")
     call_simulator_api("POST", f"/barrier-gates/{gate_name}/close")
 
 
 def delayed_close_gate(gate_name, delay_seconds=3.0):
-    """Waits for car to completely drive past the arm before lowering it."""
     def _close():
         time.sleep(delay_seconds)
         safe_close_gate(gate_name)
@@ -235,7 +241,7 @@ def allocate_parking_spot(car_type):
 
 
 # ==============================================================================
-# STARTUP HARDWARE SYNC & UNJAM ROUTINE
+# STARTUP HARDWARE SYNC
 # ==============================================================================
 def initialize_system():
     time.sleep(2)
@@ -249,39 +255,20 @@ def initialize_system():
     if isinstance(fans, list):
         exhaust_fans = [f.get("name") for f in fans if "name" in f]
 
-    # Repair broken gates on startup
     barriers = call_simulator_api("GET", "/list-barriers")
     if isinstance(barriers, list):
         for b in barriers:
             if b.get("broken", False):
                 call_simulator_api("POST", f"/barrier-gates/{b.get('name')}/repair")
 
-    # Ensure exit gate is closed by default
     safe_close_gate(exit_gate_name)
 
-    # Sync already parked cars into reserved_spots
     spots = call_simulator_api("GET", "/list-parking-spots")
     if isinstance(spots, list):
         with state_lock:
             for s in spots:
                 if s.get("purpose") == "Park" and not is_spot_empty(s):
                     reserved_spots.add(s.get("name"))
-                    print(f"[INIT SYNC] Bay '{s.get('name')}' is already occupied.")
-
-    # RESCUE: Check if cars are waiting at Entrance or Exit on boot
-    if isinstance(spots, list):
-        for s in spots:
-            purpose = s.get("purpose")
-            detected = s.get("detectedCars")
-            has_car = (isinstance(detected, int) and detected > 0) or (isinstance(detected, list) and len(detected) > 0)
-            if purpose == "EntrySpot" and has_car:
-                print("[INIT RESCUE] Car detected at entrance! Lifting gateA...")
-                safe_open_gate(entry_gate_name)
-            elif purpose == "ExitSpot" and has_car:
-                print("[INIT RESCUE] Car detected at exit! Lifting gateB and releasing...")
-                safe_open_gate(exit_gate_name)
-                time.sleep(1.5)
-                call_simulator_api("POST", "/car/WCT%20759/goto/leavepark")
 
     print("--- [INITIALIZATION COMPLETE] ---\n")
 
@@ -317,7 +304,7 @@ def webhook_listener():
 
         safe_plate = urllib.parse.quote(car_plate)
 
-        # A. Entrance Arrival -> Lift gateA, wait 1.5s for arm to rise, then dispatch
+        # A. Entrance Arrival -> Lift gateA, wait 1.5s, then dispatch
         if spot_type == "EntrySpot" and direction == "CarIn":
             target_spot = allocate_parking_spot(car_type)
             if target_spot:
@@ -341,19 +328,16 @@ def webhook_listener():
             else:
                 print(f"[ENTRY REJECT] Lot full for '{car_plate}'!")
 
-        # B. Cleared entry box -> Delay close of gateA by 3.0s
         elif spot_type == "EntrySpot" and direction == "CarOut":
-            print(f"[GATE] Car cleared entry box. Delaying close of '{entry_gate_name}' by 3s...")
             delayed_close_gate(entry_gate_name, delay_seconds=3.0)
 
-        # C. Finished parking & leaves bay -> Direct to EXIT
         elif spot_type == "Park" and direction == "CarOut":
             with state_lock:
                 reserved_spots.discard(spot_name)
             print(f"\n[PARK FINISHED] '{car_plate}' left bay '{spot_name}'. Directing to EXIT...")
             call_simulator_api("POST", f"/car/{safe_plate}/goto/exit")
 
-        # D. Arrived at Exit Box -> Wait 1.5s for full stop -> LOG TO DB & CHARGE!
+        # Arrived at Exit Box -> Calculate Fee, LOG TO DB IMMEDIATELY, and Charge!
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarIn":
             safe_close_gate(exit_gate_name)
 
@@ -366,22 +350,20 @@ def webhook_listener():
             total_fee = parking_cost + charging_cost
             car_info["expected_cost"] = total_fee
 
-            # LOG EXIT TIME & FEE TO DATABASE IMMEDIATELY
+            # Logs exit time and fee directly to SQLite database
             log_car_exit(car_plate, parking_cost, charging_cost, total_fee)
 
             if not car_info.get("charged"):
                 car_info["charged"] = True
-                print(f"[EXIT] Waiting 1.5s for '{car_plate}' to come to a full physical stop before charging...")
 
                 def _charge_after_stop(plate, p_cost, c_cost):
-                    time.sleep(1.5)
-                    print(f"[CHARGE] Car stopped. Requesting payment from '{plate}' (P={p_cost}, C={c_cost})...")
+                    time.sleep(1.5)  # Wait for car to come to full halt
+                    print(f"[CHARGE] Requesting payment from '{plate}' (P={p_cost}, C={c_cost})...")
                     charge_params = {"parkingCost": p_cost, "chargingCost": c_cost}
                     call_simulator_api("POST", f"/car/{plate}/charge", params=charge_params)
 
                 threading.Thread(target=_charge_after_stop, args=(safe_plate, parking_cost, charging_cost), daemon=True).start()
 
-        # E. Cleared Exit Barrier -> Lower gateB immediately
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarOut":
             print(f"[EXIT COMPLETE] Car '{car_plate}' departed. Lowering '{exit_gate_name}'...")
             safe_close_gate(exit_gate_name)
@@ -393,6 +375,7 @@ def webhook_listener():
         car_info = active_cars.get(car_plate, {})
         safe_plate = urllib.parse.quote(car_plate)
 
+<<<<<<< HEAD
         raw_amount = data.get("Amount")
         if raw_amount is None:
             raw_amount = data.get("amount")
@@ -407,6 +390,10 @@ def webhook_listener():
             c_cost = 0.0
 
         # Update database with exact paid amount if different
+=======
+        p_cost = car_info.get("duration", 1.0)
+        c_cost = car_info.get("expected_cost", 1.0) - p_cost
+>>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
         log_car_exit(car_plate, p_cost, c_cost, amount)
 
         print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{exit_gate_name}'...")
@@ -463,31 +450,43 @@ DASHBOARD_HTML = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Ctrl Alt Everything - Car Park Dashboard</title>
+    <title>Ctrl Alt Everything - Command Center</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+<<<<<<< HEAD
         h1, h2 { color: #00adb5; }
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; }
         
         /* Updated grid to 5 columns for the new Total Revenue card */
         .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin: 20px 0; }
         
+=======
+        h1, h2 { color: #00adb5; margin-top: 0; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; margin-bottom: 20px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 25px; }
+>>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
         .stat-card { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #00adb5; }
         .stat-val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #eeeeee; }
-        .controls { background: #222831; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .section-card { background: #1e222a; padding: 20px; border-radius: 8px; margin-bottom: 25px; border: 1px solid #2d333b; }
+        table { width: 100%; border-collapse: collapse; background: #222831; border-radius: 6px; overflow: hidden; margin-top: 10px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #393e46; }
+        th { background: #2a313d; color: #00adb5; }
+        .controls { background: #222831; padding: 15px; border-radius: 8px; margin-bottom: 25px; }
         button { background: #00adb5; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; font-weight: bold; }
         button:hover { background: #007c82; }
+<<<<<<< HEAD
         .btn-danger { background: #d9534f; }
         .btn-danger:hover { background: #c9302c; }
         .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin: 20px 0; }
         .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; transition: background 0.3s; }
+=======
+        .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin-top: 15px; }
+        .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; }
+>>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
         .bay.occupied { background: #d9534f; color: white; }
         .bay.free { background: #5cb85c; color: white; }
         .bay.broken { background: #f0ad4e; color: black; font-weight: bold; }
-        table { width: 100%; border-collapse: collapse; background: #222831; border-radius: 8px; overflow: hidden; margin-top: 10px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #393e46; }
-        th { background: #2a313d; color: #00adb5; }
-        .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
         .badge-parked { background: #5bc0de; color: white; }
         .badge-done { background: #5cb85c; color: white; }
         .filter-container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
@@ -498,11 +497,13 @@ DASHBOARD_HTML = """
 <body>
     <div class="header">
         <h1>🅿️ Ctrl Alt Everything — Command Center</h1>
-        <div><strong>Operator Mode:</strong> Active</div>
+        <div><strong>Status:</strong> System Operational</div>
     </div>
 
+    <!-- TOP STATS BAR -->
     <div class="stats-grid">
-        <div class="stat-card"><div>Available Spots</div><div class="stat-val" id="free-spots">-- / 30</div></div>
+        <div class="stat-card"><div>Available Bays</div><div class="stat-val" id="free-spots">-- / 30</div></div>
+        <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
         <div class="stat-card"><div>Gate A (Entrance)</div><div class="stat-val" id="gate-a">--</div></div>
         <div class="stat-card"><div>Gate B (Exit)</div><div class="stat-val" id="gate-b">--</div></div>
         <div class="stat-card"><div>Total Penalties</div><div class="stat-val" style="color:#d9534f;" id="penalties">0</div></div>
@@ -510,6 +511,20 @@ DASHBOARD_HTML = """
         <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
     </div>
 
+    <!-- COMPLETED DEPARTURES (NOW AT THE TOP!) -->
+    <div class="section-card">
+        <h2>🏁 Recently Completed Departures (Exit History)</h2>
+        <table>
+            <thead>
+                <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Fee Paid</th><th>Status</th></tr>
+            </thead>
+            <tbody id="completed-tbody">
+                <tr><td colspan="7" style="text-align:center; color:#888;">No completed departures yet</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- OPERATOR CONTROLS -->
     <div class="controls">
         <h2>Manual Operator Override</h2>
         <button onclick="controlGate('gateA', 'open')">Open Gate A</button>
@@ -521,9 +536,13 @@ DASHBOARD_HTML = """
         <button onclick="resetPenalties()" class="btn-danger" style="margin-left: 20px;">Reset Penalties</button>
     </div>
 
-    <h2>Live Parking Bays (Zone 1)</h2>
-    <div class="bays-grid" id="bays-container"></div>
+    <!-- LIVE BAYS -->
+    <div class="section-card">
+        <h2>Live Parking Bays (Zone 1)</h2>
+        <div class="bays-grid" id="bays-container"></div>
+    </div>
 
+<<<<<<< HEAD
     <div class="filter-container">
         <h2>Recent Activity (Database)</h2>
         <div class="filter-controls">
@@ -552,6 +571,18 @@ DASHBOARD_HTML = """
         </thead>
         <tbody id="logs-tbody"></tbody>
     </table>
+=======
+    <!-- ALL RECENT ACTIVITY -->
+    <div class="section-card">
+        <h2>All Recent Activity (Database - Last 25)</h2>
+        <table>
+            <thead>
+                <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Total Fee</th><th>Status</th></tr>
+            </thead>
+            <tbody id="all-logs-tbody"></tbody>
+        </table>
+    </div>
+>>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
 
     <script>
         let currentLogs = [];
@@ -566,6 +597,25 @@ DASHBOARD_HTML = """
             document.getElementById('penalties').innerText = `${data.penalties_count} (-${data.penalties_total})`;
             document.getElementById('revenue').innerText = `$${Number(data.total_revenue).toFixed(2)}`;
 
+            // 1. RENDER COMPLETED CARS AT THE VERY TOP
+            const completedTbody = document.getElementById('completed-tbody');
+            if (data.completed_logs.length > 0) {
+                completedTbody.innerHTML = '';
+                data.completed_logs.forEach(l => {
+                    const tr = document.createElement('tr');
+                    const feeFormatted = `$${Number(l[8] || 0).toFixed(2)}`;
+                    tr.innerHTML = `<td><strong style="color:#00adb5;">${l[1]}</strong></td>
+                                    <td>${l[2]}</td>
+                                    <td>${l[3]}</td>
+                                    <td>${l[4] || '--'}</td>
+                                    <td><strong>${l[5] || '--'}</strong></td>
+                                    <td><strong style="color:#5cb85c;">${feeFormatted}</strong></td>
+                                    <td><span class="badge badge-done">Completed</span></td>`;
+                    completedTbody.appendChild(tr);
+                });
+            }
+
+            // 2. RENDER BAYS
             const container = document.getElementById('bays-container');
             container.innerHTML = '';
             data.spots.forEach(s => {
@@ -584,6 +634,7 @@ DASHBOARD_HTML = """
                 container.appendChild(d);
             });
 
+<<<<<<< HEAD
             currentLogs = data.logs;
             renderLogs();
         }
@@ -623,16 +674,29 @@ DASHBOARD_HTML = """
 
             filteredLogs.forEach(l => {
                 const status = l[9];
+=======
+            // 3. RENDER ALL LOGS TABLE
+            const allTbody = document.getElementById('all-logs-tbody');
+            allTbody.innerHTML = '';
+            data.logs.forEach(l => {
+>>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
                 const tr = document.createElement('tr');
                 const feeFormatted = l[8] != null ? `$${Number(l[8]).toFixed(2)}` : '$0.00';
+                const isCompleted = l[9] === 'Completed' || (l[5] && l[5] !== '--');
                 tr.innerHTML = `<td><strong>${l[1]}</strong></td>
                                 <td>${l[2]}</td>
                                 <td>${l[3]}</td>
                                 <td>${l[4] || '--'}</td>
                                 <td>${l[5] || '--'}</td>
+<<<<<<< HEAD
                                 <td>${feeFormatted}</td>
                                 <td><span class="badge badge-${status === 'Parked' ? 'parked' : 'done'}">${status}</span></td>`;
                 tbody.appendChild(tr);
+=======
+                                <td><strong style="color:#5cb85c;">${feeFormatted}</strong></td>
+                                <td><span class="badge badge-${isCompleted ? 'done' : 'parked'}">${isCompleted ? 'Completed' : 'Parked'}</span></td>`;
+                allTbody.appendChild(tr);
+>>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
             });
         }
 
@@ -682,6 +746,7 @@ def dashboard_status():
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+<<<<<<< HEAD
     
     # Fetch logs
     c.execute('''
@@ -692,6 +757,20 @@ def dashboard_status():
     logs = c.fetchall()
     
     # Fetch penalties
+=======
+    # 1. Top Section: Only completed departures
+    c.execute("SELECT * FROM car_logs WHERE status = 'Completed' OR exit_time IS NOT NULL ORDER BY id DESC LIMIT 10")
+    completed_logs = c.fetchall()
+
+    # 2. Total revenue sum
+    c.execute("SELECT COALESCE(SUM(total_paid), 0.0) FROM car_logs WHERE status = 'Completed'")
+    total_revenue = c.fetchone()[0]
+
+    # 3. All logs (prioritize completed first)
+    c.execute("SELECT * FROM car_logs ORDER BY CASE WHEN status = 'Completed' THEN 0 ELSE 1 END, id DESC LIMIT 25")
+    logs = c.fetchall()
+
+>>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
     c.execute("SELECT COUNT(*), COALESCE(SUM(fine_amount), 0) FROM penalty_logs")
     p_count, p_total = c.fetchone()
     
@@ -707,6 +786,8 @@ def dashboard_status():
         "gate_b": gate_b,
         "spots": valid_spots,
         "reserved_spots": curr_reserved,
+        "completed_logs": completed_logs,
+        "total_revenue": total_revenue,
         "logs": logs,
         "penalties_count": p_count,
         "penalties_total": p_total,
@@ -740,7 +821,7 @@ if __name__ == "__main__":
 
     print("=" * 65)
     print("  CAR PARK MANAGEMENT SYSTEM (CTRL ALT EVERYTHING)")
-    print("  Exit Time & Fee Logging Active | Dashboard Synchronized")
+    print("  Completed Cars Section Promoted to Top of Dashboard")
     print("  Live Command Center: http://127.0.0.1:5000")
     print("=" * 65)
 
