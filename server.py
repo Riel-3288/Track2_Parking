@@ -183,7 +183,11 @@ def webhook_listener():
 
     # 4. Carbon Monoxide safety
     elif event_class == "carbon_monoxide_event":
-        simulator.handle_carbon_monoxide_event(data.get("DangerLevel"))
+        simulator.handle_carbon_monoxide_event(
+            data.get("DangerLevel"),
+            data.get("CarbonMonoxideLevel"),
+            data.get("ZoneName")
+    )
 
     # 5. Log Penalties
     elif event_class == "penalty":
@@ -388,6 +392,7 @@ if __name__ == "__main__":
     database.init_db()
     
     simulator.initialize_system() 
+    simulator.start_co_polling() 
 
     print("=" * 65)
     print("  CAR PARK MANAGEMENT SYSTEM (CTRL ALT EVERYTHING)")
