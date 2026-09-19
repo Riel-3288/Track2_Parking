@@ -136,6 +136,7 @@ def initialize_system():
     # Repair broken gates on startup
     barriers = call_simulator_api("GET", "/list-barriers")
     if isinstance(barriers, list):
+        config.barriers = [b.get("name") for b in barriers if b.get("name")]
         for b in barriers:
             if b.get("broken", False):
                 call_simulator_api("POST", f"/barrier-gates/{b.get('name')}/repair")
@@ -154,13 +155,9 @@ def initialize_system():
 
     print("--- [INITIALIZATION COMPLETE] ---\n")
 
-
 def handle_carbon_monoxide_event(danger_level):
     """Turns exhaust fans on/off based on the simulator's reported CO danger level."""
-    config.co_danger_level = danger_level or "Safe"
-
     fans = config.exhaust_fans or ["fan0"]
-    
     if danger_level in ["Mid", "High", "Critical"]:
         print(f"[CO ALERT] Danger level '{danger_level}'. Turning fans ON: {fans}")
         for fan in fans:

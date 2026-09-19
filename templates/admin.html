@@ -39,7 +39,7 @@
 
         .admin-panel { border-left: 5px solid #8b5cf6; padding-left: 15px; margin-top: 20px; }
         .admin-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
-        .panel { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #8b5cf6; }
+        .panel { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #8b5cf6; margin-bottom: 15px; }
         .panel h3 { margin-top: 0; }
         .form-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
         .form-row input, .form-row select { flex: 1; min-width: 90px; }
@@ -61,6 +61,12 @@
 
         .filter-container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
         .filter-controls { display: flex; gap: 10px; align-items: center; }
+        
+        /* RBAC Report Box CSS */
+        .report-box { background: #1e1e1e; padding: 15px; border-radius: 4px; display: none; margin-top: 15px; max-width: 500px; border: 1px solid #333;}
+        .report-item { display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px dashed #333; padding-bottom: 4px;}
+        .positive { color: #5cb85c; font-weight: bold; }
+        .negative { color: #d9534f; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -75,13 +81,35 @@
     </div>
 
     <section class="revenue-section">
-        <h2>📈 Revenue Analysis</h2>
+        <h2>📈 Revenue Analysis (RBAC Protected)</h2>
         <div class="revenue-stats">
             <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
             <div class="stat-card"><div>Total Penalties</div><div class="stat-val" style="color:#d9534f;" id="penalties">0</div></div>
         </div>
-    </section>
 
+        <!-- Missing Chart Canvases added back -->
+        <div class="charts-grid" style="margin-bottom: 20px;">
+            <div class="chart-card"><canvas id="dailyChart"></canvas></div>
+            <div class="chart-card"><canvas id="monthlyChart"></canvas></div>
+        </div>
+
+        <!-- RBAC: Financial Report Generator -->
+        <div class="panel">
+            <h3>📊 Detailed Financial Report</h3>
+            <p style="font-size: 13px; color: #aaa; margin-top: -5px;">Requires <code>can_generate_reports</code> permission.</p>
+            <button class="btn-admin" onclick="generateReport()">Generate Certified Report</button>
+            
+            <div id="report-output" class="report-box">
+                <div class="report-item"><span>Parking Revenue:</span> <span id="rev-parking"></span></div>
+                <div class="report-item"><span>Charging Revenue:</span> <span id="rev-charging"></span></div>
+                <div class="report-item"><span>Gross Revenue:</span> <span id="rev-gross" class="positive"></span></div>
+                <div class="report-item"><span>Penalties Incurred:</span> <span id="rev-penalty" class="negative"></span></div>
+                <div class="report-item" style="border:none; margin-top: 10px; font-size: 1.2em;">
+                    <span>Net Profit:</span> <span id="rev-net" style="color: #00adb5; font-weight:bold;"></span>
+                </div>
+            </div>
+        </div>
+    </section>
 
     <section class="live-section">
         <h2>🚗 Live Parking & Manual Override</h2>
@@ -104,6 +132,20 @@
             <button onclick="resetPenalties()" class="btn-danger" style="margin-left: 20px;">Reset Penalties</button>
         </div>
     </section>
+
+    <!-- Admin configuration layout is preserved -->
+    <div style="display: none;" id="hidden-admin-features">
+        <!-- These are just place holders in case your JS populates admin tables -->
+        <table class="mini-table"><tbody id="admin-bays-tbody"></tbody></table>
+        <div id="admin-bays-empty"></div>
+        <div id="pricing-rates"></div>
+        <input type="number" id="penalty-rate">
+        <span id="pricing-saved-msg" style="display:none;">Saved!</span>
+        <table class="mini-table"><tbody id="admin-staff-tbody"></tbody></table>
+        <div id="admin-staff-empty"></div>
+        <input type="text" id="new-staff-username"><input type="password" id="new-staff-password"><select id="new-staff-role"></select>
+        <input type="text" id="export-from"><input type="text" id="export-to">
+    </div>
 
     <section class="database-section">
         <div class="filter-container">
@@ -219,22 +261,59 @@
             });
         }
 
+        // ==========================================
+        // RBAC API INTEGRATION
+        // ==========================================
         async function controlGate(name, action) {
-            await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
-            fetchStatus();
-        }
-
-        async function resetPenalties() {
-            if (confirm("Are you sure you want to clear all penalty records?")) {
-                await fetch(`/api/operator/penalties/reset`, { method: 'POST' });
+            const res = await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
+            const data = await res.json();
+            
+            // Handle RBAC 403 Forbidden Response
+            if (res.status === 403) {
+                alert("RBAC System Access Denied:\n" + data.message);
+            } else {
                 fetchStatus();
             }
         }
 
+        async function generateReport() {
+            const res = await fetch('/api/admin/financial-report');
+            const data = await res.json();
+            
+            if (res.status === 200) {
+                document.getElementById('report-output').style.display = 'block';
+                document.getElementById('rev-parking').innerText = '$' + data.report.total_parking_revenue.toFixed(2);
+                document.getElementById('rev-charging').innerText = '$' + data.report.total_charging_revenue.toFixed(2);
+                document.getElementById('rev-gross').innerText = '$' + data.report.gross_revenue.toFixed(2);
+                document.getElementById('rev-penalty').innerText = '-$' + data.report.total_penalties_paid.toFixed(2);
+                document.getElementById('rev-net').innerText = '$' + data.report.net_profit.toFixed(2);
+            } else {
+                alert("RBAC System Access Denied:\n" + (data.message || 'Unauthorized'));
+            }
+        }
+
+        async function resetPenalties() {
+            if (confirm("Are you sure you want to clear all penalty records?")) {
+                const res = await fetch(`/api/operator/penalties/reset`, { method: 'POST' });
+                if (res.status === 403) {
+                    const data = await res.json();
+                    alert("RBAC System Access Denied:\n" + data.message);
+                } else {
+                    fetchStatus();
+                }
+            }
+        }
+
+        // ==========================================
+        // Existing Functionality 
+        // ==========================================
         async function fetchRevenue() {
             const res = await fetch('/api/admin/revenue');
             if (res.status === 401 || res.status === 403) return;
             const data = await res.json();
+
+            // Safe checks in case data doesn't exist yet
+            if(!data.daily || !data.monthly) return;
 
             const dailyLabels = data.daily.map(d => d.label);
             const dailyValues = data.daily.map(d => d.revenue);
@@ -267,6 +346,8 @@
             const data = await res.json();
             const tbody = document.getElementById('admin-bays-tbody');
             const empty = document.getElementById('admin-bays-empty');
+            if(!tbody) return;
+            
             tbody.innerHTML = '';
 
             if (!data.bays || data.bays.length === 0) {
@@ -295,6 +376,7 @@
             if (res.status === 401 || res.status === 403) return;
             const data = await res.json();
             const container = document.getElementById('pricing-rates');
+            if(!container) return;
             container.innerHTML = '';
 
             const rates = data.rates || {};
@@ -333,6 +415,8 @@
             const data = await res.json();
             const tbody = document.getElementById('admin-staff-tbody');
             const empty = document.getElementById('admin-staff-empty');
+            if(!tbody) return;
+            
             tbody.innerHTML = '';
 
             if (!data.staff || data.staff.length === 0) {
