@@ -3,6 +3,7 @@ import threading
 import hashlib
 import urllib.parse
 import sqlite3
+import re
 from flask import Flask, request, jsonify, render_template_string
 import requests
 
@@ -91,7 +92,7 @@ def log_penalty(reason, fine):
 
 
 # ==============================================================================
-# SAFE SPOT OCCUPANCY CHECK (Handles int 0/1 and list [])
+# SAFE SPOT OCCUPANCY CHECK
 # ==============================================================================
 def is_spot_empty(spot):
     detected = spot.get("detectedCars")
@@ -181,18 +182,6 @@ def delayed_close_gate(gate_name, delay_seconds=3.0):
         time.sleep(delay_seconds)
         safe_close_gate(gate_name)
     threading.Thread(target=_close, daemon=True).start()
-
-
-# ==============================================================================
-# MD5 WEBHOOK INTEGRITY VERIFICATION
-# ==============================================================================
-def verify_signature(data):
-    received_sig = data.get("Signature")
-    if not received_sig: return True
-    keys = sorted([k for k in data.keys() if k != "Signature"])
-    values_str = "|".join(str(data[k]) for k in keys)
-    computed_sig = hashlib.md5(values_str.encode("utf-8")).hexdigest()
-    return computed_sig.lower() == str(received_sig).lower()
 
 
 # ==============================================================================
@@ -401,12 +390,22 @@ def webhook_listener():
     # 2. Payment confirmed -> Lift gateB, wait 1.5s, dispatch to leavepark, auto-close!
     elif event_class == "payment_made":
         car_plate = data.get("CarPlateNumber")
-        amount = float(data.get("Amount", 0.0))
         car_info = active_cars.get(car_plate, {})
         safe_plate = urllib.parse.quote(car_plate)
 
-        p_cost = car_info.get("duration", 1.0)
-        c_cost = car_info.get("expected_cost", 1.0) - p_cost
+        raw_amount = data.get("Amount")
+        if raw_amount is None:
+            raw_amount = data.get("amount")
+        
+        amount = float(raw_amount) if raw_amount is not None else float(car_info.get("expected_cost", 1.0))
+        if amount == 0.0:
+            amount = float(car_info.get("expected_cost", 1.0))
+
+        p_cost = float(car_info.get("duration", 1.0))
+        c_cost = float(car_info.get("expected_cost", amount)) - p_cost
+        if c_cost < 0: 
+            c_cost = 0.0
+
         # Update database with exact paid amount if different
         log_car_exit(car_plate, p_cost, c_cost, amount)
 
@@ -469,14 +468,19 @@ DASHBOARD_HTML = """
         body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
         h1, h2 { color: #00adb5; }
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+        
+        /* Updated grid to 5 columns for the new Total Revenue card */
+        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin: 20px 0; }
+        
         .stat-card { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #00adb5; }
         .stat-val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #eeeeee; }
         .controls { background: #222831; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
         button { background: #00adb5; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; font-weight: bold; }
         button:hover { background: #007c82; }
+        .btn-danger { background: #d9534f; }
+        .btn-danger:hover { background: #c9302c; }
         .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin: 20px 0; }
-        .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; }
+        .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; transition: background 0.3s; }
         .bay.occupied { background: #d9534f; color: white; }
         .bay.free { background: #5cb85c; color: white; }
         .bay.broken { background: #f0ad4e; color: black; font-weight: bold; }
@@ -486,6 +490,9 @@ DASHBOARD_HTML = """
         .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
         .badge-parked { background: #5bc0de; color: white; }
         .badge-done { background: #5cb85c; color: white; }
+        .filter-container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+        .filter-controls { display: flex; gap: 10px; align-items: center; }
+        input[type="text"], select { padding: 6px; border-radius: 4px; background: #393e46; color: white; border: 1px solid #00adb5; }
     </style>
 </head>
 <body>
@@ -499,6 +506,8 @@ DASHBOARD_HTML = """
         <div class="stat-card"><div>Gate A (Entrance)</div><div class="stat-val" id="gate-a">--</div></div>
         <div class="stat-card"><div>Gate B (Exit)</div><div class="stat-val" id="gate-b">--</div></div>
         <div class="stat-card"><div>Total Penalties</div><div class="stat-val" style="color:#d9534f;" id="penalties">0</div></div>
+        <!-- New Total Revenue Card -->
+        <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
     </div>
 
     <div class="controls">
@@ -509,12 +518,34 @@ DASHBOARD_HTML = """
         <button onclick="controlGate('gateB', 'open')">Open Gate B</button>
         <button onclick="controlGate('gateB', 'close')">Close Gate B</button>
         <button onclick="controlGate('gateB', 'repair')">Repair Gate B</button>
+        <button onclick="resetPenalties()" class="btn-danger" style="margin-left: 20px;">Reset Penalties</button>
     </div>
 
     <h2>Live Parking Bays (Zone 1)</h2>
     <div class="bays-grid" id="bays-container"></div>
 
-    <h2>Recent Activity (Database)</h2>
+    <div class="filter-container">
+        <h2>Recent Activity (Database)</h2>
+        <div class="filter-controls">
+            <input type="text" id="search-plate" placeholder="Search Plate..." onkeyup="renderLogs()">
+            
+            <label for="sort-filter"><strong>Sort: </strong></label>
+            <select id="sort-filter" onchange="renderLogs()">
+                <option value="time_desc">Time (Newest First)</option>
+                <option value="time_asc">Time (Oldest First)</option>
+                <option value="plate_asc">Plate (A-Z)</option>
+                <option value="plate_desc">Plate (Z-A)</option>
+            </select>
+
+            <label for="status-filter"><strong>Status: </strong></label>
+            <select id="status-filter" onchange="renderLogs()">
+                <option value="All">All</option>
+                <option value="Parked">Parked</option>
+                <option value="Completed">Completed</option>
+            </select>
+        </div>
+    </div>
+    
     <table>
         <thead>
             <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Total Fee</th><th>Status</th></tr>
@@ -523,6 +554,8 @@ DASHBOARD_HTML = """
     </table>
 
     <script>
+        let currentLogs = [];
+
         async function fetchStatus() {
             const res = await fetch('/api/dashboard/status');
             const data = await res.json();
@@ -531,6 +564,7 @@ DASHBOARD_HTML = """
             document.getElementById('gate-a').innerText = data.gate_a;
             document.getElementById('gate-b').innerText = data.gate_b;
             document.getElementById('penalties').innerText = `${data.penalties_count} (-${data.penalties_total})`;
+            document.getElementById('revenue').innerText = `$${Number(data.total_revenue).toFixed(2)}`;
 
             const container = document.getElementById('bays-container');
             container.innerHTML = '';
@@ -550,9 +584,45 @@ DASHBOARD_HTML = """
                 container.appendChild(d);
             });
 
+            currentLogs = data.logs;
+            renderLogs();
+        }
+
+        function renderLogs() {
+            const filter = document.getElementById('status-filter').value;
+            const searchPlate = document.getElementById('search-plate').value.toLowerCase();
+            const sortMethod = document.getElementById('sort-filter').value;
             const tbody = document.getElementById('logs-tbody');
             tbody.innerHTML = '';
-            data.logs.forEach(l => {
+
+            // Filter logic
+            let filteredLogs = currentLogs.filter(l => {
+                const plate = (l[1] || '').toLowerCase();
+                const status = l[9];
+                
+                if (searchPlate && !plate.includes(searchPlate)) return false;
+                if (filter !== 'All' && status !== filter) return false;
+                return true;
+            });
+
+            // Sort logic
+            filteredLogs.sort((a, b) => {
+                if (sortMethod.startsWith('plate')) {
+                    const plateA = (a[1] || '').toLowerCase();
+                    const plateB = (b[1] || '').toLowerCase();
+                    if (sortMethod === 'plate_asc') return plateA.localeCompare(plateB);
+                    return plateB.localeCompare(plateA);
+                } else {
+                    // Time sorting using latest of exit_time or entry_time
+                    const timeA = a[5] || a[4] || "";
+                    const timeB = b[5] || b[4] || "";
+                    if (sortMethod === 'time_desc') return timeB.localeCompare(timeA);
+                    return timeA.localeCompare(timeB);
+                }
+            });
+
+            filteredLogs.forEach(l => {
+                const status = l[9];
                 const tr = document.createElement('tr');
                 const feeFormatted = l[8] != null ? `$${Number(l[8]).toFixed(2)}` : '$0.00';
                 tr.innerHTML = `<td><strong>${l[1]}</strong></td>
@@ -561,7 +631,7 @@ DASHBOARD_HTML = """
                                 <td>${l[4] || '--'}</td>
                                 <td>${l[5] || '--'}</td>
                                 <td>${feeFormatted}</td>
-                                <td><span class="badge badge-${l[9] === 'Parked' ? 'parked' : 'done'}">${l[9]}</span></td>`;
+                                <td><span class="badge badge-${status === 'Parked' ? 'parked' : 'done'}">${status}</span></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -569,6 +639,13 @@ DASHBOARD_HTML = """
         async function controlGate(name, action) {
             await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
             fetchStatus();
+        }
+
+        async function resetPenalties() {
+            if(confirm("Are you sure you want to clear all penalty records?")) {
+                await fetch(`/api/operator/penalties/reset`, { method: 'POST' });
+                fetchStatus();
+            }
         }
 
         setInterval(fetchStatus, 1500);
@@ -597,23 +674,43 @@ def dashboard_status():
         free_spots = sum(1 for s in spots if s.get("purpose") == "Park" and is_spot_empty(s) and not s.get("broken") and s.get("name") not in reserved_spots)
         curr_reserved = list(reserved_spots)
 
+    # Natural Sort algorithm to keep bays fixed in position
+    valid_spots = [s for s in spots if s.get("purpose") == "Park"]
+    def natural_sort_key(s):
+        return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s.get("name", ""))]
+    valid_spots.sort(key=natural_sort_key)
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT * FROM car_logs ORDER BY id DESC LIMIT 10")
+    
+    # Fetch logs
+    c.execute('''
+        SELECT * FROM car_logs 
+        ORDER BY CASE WHEN exit_time IS NOT NULL THEN exit_time ELSE entry_time END DESC 
+        LIMIT 100
+    ''')
     logs = c.fetchall()
+    
+    # Fetch penalties
     c.execute("SELECT COUNT(*), COALESCE(SUM(fine_amount), 0) FROM penalty_logs")
     p_count, p_total = c.fetchone()
+    
+    # Fetch total revenue (Sum of total_paid for Completed sessions)
+    c.execute("SELECT COALESCE(SUM(total_paid), 0) FROM car_logs WHERE status = 'Completed'")
+    total_revenue = c.fetchone()[0]
+
     conn.close()
 
     return jsonify({
         "free_spots": free_spots,
         "gate_a": gate_a,
         "gate_b": gate_b,
-        "spots": [s for s in spots if s.get("purpose") == "Park"],
+        "spots": valid_spots,
         "reserved_spots": curr_reserved,
         "logs": logs,
         "penalties_count": p_count,
-        "penalties_total": p_total
+        "penalties_total": p_total,
+        "total_revenue": total_revenue
     })
 
 @app.route("/api/operator/gate/<name>/<action>", methods=["POST"])
@@ -621,6 +718,16 @@ def operator_gate(name, action):
     if action == "repair": call_simulator_api("POST", f"/barrier-gates/{name}/repair")
     elif action == "open": safe_open_gate(name)
     elif action == "close": safe_close_gate(name)
+    return jsonify({"status": "ok"})
+
+# Reset Penalties Endpoint
+@app.route("/api/operator/penalties/reset", methods=["POST"])
+def operator_reset_penalties():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM penalty_logs")
+    conn.commit()
+    conn.close()
     return jsonify({"status": "ok"})
 
 
