@@ -186,8 +186,14 @@
         }
 
         async function controlGate(name, action) {
-            await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
-            fetchStatus();
+            const res = await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
+            const data = await res.json();
+            
+            if (res.status === 403) {
+                alert("RBAC System: " + data.message); // If the user doesn't have permission, show an alert with the message from the server
+            } else {
+                fetchStatus();
+            }
         }
 
         async function resetPenalties() {

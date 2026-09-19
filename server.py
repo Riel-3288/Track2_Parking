@@ -14,6 +14,20 @@ app.secret_key = "ctrl_alt_everything_super_secret_key"
 # ==============================================================================
 # WEBHOOK EVENT HANDLER
 # ==============================================================================
+def get_gate_for_spot(spot_name, is_entry=True):
+    """通过 SpotName 里的数字推断真实的 Gate 名字 (如 Entry2 -> gate2)"""
+    import re
+    if not spot_name:
+        return config.entry_gate_name if is_entry else config.exit_gate_name
+        
+    match = re.search(r'\d+', spot_name)
+    if match:
+        num = match.group()
+        for b in config.barriers:
+            if num in b:
+                return b
+    return config.entry_gate_name if is_entry else config.exit_gate_name
+
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook_listener():
     if request.method == "GET":
@@ -46,6 +60,8 @@ def webhook_listener():
         # A. Entrance Arrival -> Record planned duration & Dispatch
         if spot_type == "EntrySpot" and direction == "CarIn":
             target_spot = simulator.allocate_parking_spot(car_type)
+            target_gate = get_gate_for_spot(spot_name, is_entry=True)  # 智能找门！
+            
             if target_spot:
                 config.active_cars[raw_plate] = {
                     "spot": target_spot,
@@ -54,9 +70,9 @@ def webhook_listener():
                     "charged": False
                 }
                 database.log_car_entry(raw_plate, car_type, target_spot)
-                print(f"\n[ENTRY] Admitting '{raw_plate}' ({car_type}) -> Bay '{target_spot}' (Planned: {planned_duration} mins)")
+                print(f"\n[ENTRY] Car '{raw_plate}' at '{spot_name}' -> Auto-opening '{target_gate}', Bay '{target_spot}'")
 
-                simulator.safe_open_gate(config.entry_gate_name)
+                simulator.safe_open_gate(target_gate)
 
                 def _dispatch_entry(plate, spot):
                     time.sleep(1.5)
@@ -67,9 +83,10 @@ def webhook_listener():
             else:
                 print(f"[ENTRY REJECT] Lot full for '{raw_plate}'!")
 
-        # B. Cleared entry box -> Delay close of gateA by 3s
+        # B. Cleared entry box -> Delay close
         elif spot_type == "EntrySpot" and direction == "CarOut":
-            simulator.delayed_close_gate(config.entry_gate_name, delay_seconds=3.0)
+            target_gate = get_gate_for_spot(spot_name, is_entry=True)
+            simulator.delayed_close_gate(target_gate, delay_seconds=3.0)
 
         # C1. Car physically enters parking bay -> Capture exact planned stay if updated!
         elif spot_type == "Park" and direction == "CarIn":
@@ -87,9 +104,12 @@ def webhook_listener():
 
         # D. Arrived at Exit Box -> Calculate Fee from Simulator's Exact Planned Stay
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarIn":
-            simulator.safe_close_gate(config.exit_gate_name)
+            target_gate = get_gate_for_spot(spot_name, is_entry=False)
+            simulator.safe_close_gate(target_gate)
 
             car_info = config.active_cars.get(raw_plate, {})
+            car_info["exit_gate"] = target_gate  # 记住它是从哪个门出去的，付款后开这个门
+            
             duration = max(1, int(car_info.get("duration", 1)))
             is_electric = (car_info.get("type") == "Electric")
 
@@ -106,7 +126,7 @@ def webhook_listener():
 
             if not car_info.get("charged"):
                 car_info["charged"] = True
-                print(f"[EXIT] '{raw_plate}' fee: {duration} mins -> Parking=${parking_cost:.2f}, Charging=${charging_cost:.2f}")
+                print(f"[EXIT WAIT] '{raw_plate}' at '{spot_name}' (Gate: {target_gate}) -> Fee: ${total_fee:.2f}")
 
                 def _charge_after_stop(plate, p_cost, c_cost):
                     time.sleep(1.5)  # Wait for car to come to a complete halt
@@ -116,13 +136,14 @@ def webhook_listener():
 
                 threading.Thread(target=_charge_after_stop, args=(nospace_plate, parking_cost, charging_cost), daemon=True).start()
 
-        # E. Cleared Exit Barrier -> Lower gateB immediately
+        # E. Cleared Exit Barrier -> Lower gate immediately
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarOut":
-            print(f"[EXIT COMPLETE] Car '{raw_plate}' departed. Lowering '{config.exit_gate_name}'...")
-            simulator.safe_close_gate(config.exit_gate_name)
+            target_gate = get_gate_for_spot(spot_name, is_entry=False)
+            print(f"[EXIT COMPLETE] Car '{raw_plate}' departed. Lowering '{target_gate}'...")
+            simulator.safe_close_gate(target_gate)
             config.active_cars.pop(raw_plate, None)
 
-    # 2. Payment confirmed -> Lift gateB, wait 1.5s, dispatch to leavepark, auto-close!
+    # 2. Payment confirmed -> Lift exit gate, wait 1.5s, dispatch to leavepark, auto-close!
     elif event_class == "payment_made":
         car_plate = data.get("CarPlateNumber", "").strip()
         nospace_plate = car_plate.replace(" ", "")
@@ -136,20 +157,21 @@ def webhook_listener():
         p_cost = float(car_info.get("parking_cost", 1.0))
         c_cost = float(car_info.get("charging_cost", 0.0))
 
-        # Update database with exact paid amount
         database.log_car_exit(car_plate, p_cost, c_cost, amount)
 
-        print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{config.exit_gate_name}'...")
-        simulator.safe_open_gate(config.exit_gate_name)
+        # 取出刚才存下的真实 Exit Gate
+        target_gate = car_info.get("exit_gate", config.exit_gate_name)
+        print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{target_gate}'...")
+        simulator.safe_open_gate(target_gate)
 
-        def _dispatch_exit(plate):
-            time.sleep(1.5)  # Wait for gateB arm to physically rise
+        def _dispatch_exit(plate, gate):
+            time.sleep(1.5)  # Wait for gate arm to physically rise
             print(f"[EXIT DISPATCH] Arm raised. Releasing '{plate}' from park...")
             simulator.call_simulator_api("POST", f"/car/{plate}/goto/leavepark")
             time.sleep(4.0)
-            simulator.safe_close_gate(config.exit_gate_name)
+            simulator.safe_close_gate(gate)
 
-        threading.Thread(target=_dispatch_exit, args=(nospace_plate,), daemon=True).start()
+        threading.Thread(target=_dispatch_exit, args=(nospace_plate, target_gate), daemon=True).start()
 
     # 3. Auto-Repairs
     elif event_class == "component_broken":
@@ -164,6 +186,11 @@ def webhook_listener():
                 simulator.call_simulator_api("POST", f"/parking-spots/{c_name}/repair")
         elif c_type == "ExhaustFan":
             simulator.call_simulator_api("POST", f"/exhaust-fans/{c_name}/repair")
+        # --- Level 2 Auto-repair additions ---
+        elif c_type == "Light":
+            simulator.call_simulator_api("POST", f"/lights/{c_name}/repair")
+        elif c_type == "Display":
+            simulator.call_simulator_api("POST", f"/displays/{c_name}/repair")
 
     # 4. Carbon Monoxide safety
     elif event_class == "carbon_monoxide_event":
@@ -265,8 +292,10 @@ def dashboard_status():
     gate_a = "Unknown"
     gate_b = "Unknown"
     for b in barriers:
-        if b.get("name") == "gateA": gate_a = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
-        elif b.get("name") == "gateB": gate_b = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
+        if b.get("name") == config.entry_gate_name: 
+            gate_a = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
+        elif b.get("name") == config.exit_gate_name: 
+            gate_b = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
 
     with config.state_lock:
         free_spots = sum(1 for s in spots if s.get("purpose") == "Park" and simulator.is_spot_empty(s) and not s.get("broken") and s.get("name") not in config.reserved_spots)
@@ -309,13 +338,32 @@ def dashboard_status():
 @app.route("/api/operator/gate/<name>/<action>", methods=["POST"])
 @auth.login_required
 def operator_gate(name, action):
-    if action == "repair": simulator.call_simulator_api("POST", f"/barrier-gates/{name}/repair")
-    elif action == "open": simulator.safe_open_gate(name)
-    elif action == "close": simulator.safe_close_gate(name)
+    # --- Map frontend gate names to actual gate names ---
+    real_gate_name = name
+    if name == "gateA": 
+        real_gate_name = config.entry_gate_name
+    elif name == "gateB": 
+        real_gate_name = config.exit_gate_name
+
+    # RBAC: Check if the user has permission to control gates
+    if action in ["open", "close"]:
+        if not auth.has_permission("can_control_gate"):
+            return jsonify({"status": "error", "message": "No permission to control gates"}), 403
+            
+        if action == "open": simulator.safe_open_gate(real_gate_name)
+        elif action == "close": simulator.safe_close_gate(real_gate_name)
+        
+    elif action == "repair":
+        if not auth.has_permission("can_repair"):
+            return jsonify({"status": "error", "message": "Only authorized technicians (Admin) can perform repairs."}), 403
+            
+        simulator.call_simulator_api("POST", f"/barrier-gates/{real_gate_name}/repair")
+        
     return jsonify({"status": "ok"})
 
 @app.route("/api/operator/penalties/reset", methods=["POST"])
-@auth.login_required
+@auth.permission_required("can_reset_penalties") # only admins can reset penalties
+
 def operator_reset_penalties():
     conn = sqlite3.connect(config.DB_FILE)
     c = conn.cursor()
@@ -324,13 +372,39 @@ def operator_reset_penalties():
     conn.close()
     return jsonify({"status": "ok"})
 
+# Financial report endpoint for admins
+@app.route("/api/admin/financial-report", methods=["GET"])
+@auth.permission_required("can_generate_reports")
+def generate_financial_report():
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    # Calculate total revenue from completed car logs
+    c.execute("SELECT SUM(parking_cost), SUM(charging_cost), SUM(total_paid) FROM car_logs WHERE status = 'Completed'")
+    rev_row = c.fetchone()
+    
+    c.execute("SELECT SUM(fine_amount) FROM penalty_logs")
+    pen_row = c.fetchone()
+    conn.close()
+
+    return jsonify({
+        "status": "success",
+        "report": {
+            "total_parking_revenue": rev_row[0] or 0.0,
+            "total_charging_revenue": rev_row[1] or 0.0,
+            "gross_revenue": rev_row[2] or 0.0,
+            "total_penalties_paid": pen_row[0] or 0.0,
+            "net_profit": (rev_row[2] or 0.0) - (pen_row[0] or 0.0)
+        }
+    })
+
 
 # ==============================================================================
 # MAIN ENTRYPOINT
 # ==============================================================================
 if __name__ == "__main__":
     database.init_db()
-    threading.Thread(target=simulator.initialize_system, daemon=True).start()
+    
+    simulator.initialize_system() 
 
     print("=" * 65)
     print("  CAR PARK MANAGEMENT SYSTEM (CTRL ALT EVERYTHING)")
