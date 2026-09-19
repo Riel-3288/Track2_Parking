@@ -232,31 +232,33 @@ def webhook_listener():
 def login():
     error = None
     if request.method == "POST":
-        action = request.form.get("action") 
+        action = request.form.get("action")
         username = request.form.get("username").strip()
         password = request.form.get("password")
-        
-        users = auth.load_users()
-
         ip = request.remote_addr
+
+        users = auth.load_users()
 
         if action == "login":
             user = users.get(username)
             if user and user["password"] == password:
-                history = database.get_recent_logins(username, 3) 
+                # Log the successful login attempt and fetch recent login history
+                history = database.get_recent_logins(username, 3)
                 database.log_login_attempt(username, True, ip, "login_success")
 
                 session["username"] = username
                 session["role"] = user["role"]
                 session["last_logins"] = history
 
-                return redirect(url_for("admin_dashboard" if user["role"] == "admin"
-                                        else "operator_dashboard"))
+                if user["role"] == "admin":
+                    return redirect(url_for("admin_dashboard"))
+                else:
+                    return redirect(url_for("operator_dashboard"))
             else:
                 reason = "unknown_user" if not user else "wrong_password"
                 database.log_login_attempt(username or "(blank)", False, ip, reason)
                 error = "Invalid credentials. Please try again."
-                
+
         elif action == "signup":
             role = request.form.get("role")
             if username in users:
@@ -266,14 +268,17 @@ def login():
             else:
                 users[username] = {"password": password, "role": role}
                 auth.save_users(users)
-                
+
+                database.log_login_attempt(username, True, ip, "signup")
                 session["username"] = username
                 session["role"] = role
+                session["last_logins"] = []
+
                 if role == "admin":
                     return redirect(url_for("admin_dashboard"))
                 else:
                     return redirect(url_for("operator_dashboard"))
-            
+
     return render_template("login.html", error=error)
 
 @app.route("/logout")
@@ -291,13 +296,22 @@ def root():
 @app.route("/operator", methods=["GET"])
 @auth.login_required
 def operator_dashboard():
-    return render_template("operator.html", username=session.get("username"))
+    return render_template(
+        "operator.html",
+        username=session.get("username"),
+        role=session.get("role"),
+        last_logins=session.get("last_logins", [])
+    )
 
 @app.route("/admin", methods=["GET"])
 @auth.admin_required
 def admin_dashboard():
-    return render_template("admin.html", username=session.get("username"))
-
+    return render_template(
+        "admin.html",
+        username=session.get("username"),
+        role=session.get("role"),
+        last_logins=session.get("last_logins", [])
+    )
 
 # ==============================================================================
 # API ENDPOINTS FOR DASHBOARD (PROTECTED)

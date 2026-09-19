@@ -51,6 +51,30 @@
         </div>
     </div>
 
+    {% if last_logins %}
+    <section>
+        <h2>🔐 Recent Login Activity (last {{ last_logins|length }})</h2>
+        <table style="max-width:600px;">
+            <thead><tr><th>Time</th><th>Result</th><th>IP</th></tr></thead>
+            <tbody>
+            {% for l in last_logins %}
+                <tr>
+                    <td>{{ l.time }}</td>
+                    <td>
+                        <span class="badge" style="background:{{ '#5cb85c' if l.success else '#d9534f' }};color:white;">
+                            {{ 'Success' if l.success else 'Failed (' ~ l.reason ~ ')' }}
+                        </span>
+                    </td>
+                    <td>{{ l.ip }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% else %}
+    <p style="color:#888;font-size:13px;">No previous login history for this account.</p>
+    {% endif %}
+    
     <section class="live-section">
         <h2>🚗 Live Parking & Manual Override</h2>
         <div class="live-mini-stats">
