@@ -432,6 +432,7 @@ if __name__ == "__main__":
     print("  Live Command Center: http://127.0.0.1:5000")
     print("=" * 65)
 
-    simulator.handle_carbon_monoxide_event("Safe")
+    for zone in config.STATIC_ZONE_FANS:
+        simulator.handle_carbon_monoxide_event("Safe", 0, zone)
 
     app.run(host="0.0.0.0", port=5000, debug=False)
