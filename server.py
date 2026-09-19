@@ -4,10 +4,13 @@ import hashlib
 import urllib.parse
 import sqlite3
 import re
-from flask import Flask, request, jsonify, render_template_string
 import requests
+from functools import wraps
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for
 
 app = Flask(__name__)
+# secret_key
+app.secret_key = "ctrl_alt_everything_super_secret_key" 
 
 # ==============================================================================
 # CONFIGURATION
@@ -29,6 +32,32 @@ reserved_spots = set()    # Bays reserved by cars driving to them
 entry_gate_name = "gateA"
 exit_gate_name = "gateB"
 exhaust_fans = []
+
+# ==============================================================================
+# USER AUTHENTICATION & ROLES
+# ==============================================================================
+SYSTEM_USERS = {
+    "admin": {"password": "admin", "role": "admin"},
+    "operator": {"password": "operator", "role": "operator"}
+}
+
+def login_required(f):
+    """装饰器：检查用户是否已登录"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "username" not in session:
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    """装饰器：检查用户是否为 Admin"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "username" not in session or session.get("role") != "admin":
+            return "Access Denied: Admins Only", 403
+        return f(*args, **kwargs)
+    return decorated_function
 
 
 # ==============================================================================
@@ -65,7 +94,6 @@ def log_car_entry(plate, car_type, spot):
     conn.close()
 
 def log_car_exit(plate, p_cost, c_cost, total):
-    """Updates database with exit timestamp, calculated fees, and marks Completed."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''UPDATE car_logs 
@@ -106,7 +134,6 @@ def is_spot_empty(spot):
 # SIMULATOR API CLIENT (JWT AUTHENTICATED)
 # ==============================================================================
 def login_to_simulator():
-    """Logs in using credentials and caches Bearer JWT token."""
     global jwt_token
     with auth_lock:
         url = f"{SIMULATOR_BASE_URL}/auth/login"
@@ -122,9 +149,7 @@ def login_to_simulator():
             print(f"[AUTH ERROR] Cannot connect to simulator on port 9898: {e}")
         return False
 
-
 def call_simulator_api(method, endpoint, payload=None, params=None):
-    """Sends authenticated HTTP requests to the simulator."""
     global jwt_token
     if not jwt_token and not login_to_simulator():
         return None
@@ -157,7 +182,6 @@ def call_simulator_api(method, endpoint, payload=None, params=None):
 # SMART SELF-REPAIRING GATE CONTROLLER (WITH TIMED DELAYS)
 # ==============================================================================
 def safe_open_gate(gate_name):
-    """Inspects gate health before opening. Auto-repairs if worn out."""
     barriers = call_simulator_api("GET", "/list-barriers")
     if isinstance(barriers, list):
         for b in barriers:
@@ -169,15 +193,11 @@ def safe_open_gate(gate_name):
     print(f"[GATE] Lifting barrier '{gate_name}'...")
     call_simulator_api("POST", f"/barrier-gates/{gate_name}/open")
 
-
 def safe_close_gate(gate_name):
-    """Ensures gate closes cleanly."""
     print(f"[GATE] Lowering barrier '{gate_name}'...")
     call_simulator_api("POST", f"/barrier-gates/{gate_name}/close")
 
-
 def delayed_close_gate(gate_name, delay_seconds=3.0):
-    """Waits for car to completely drive past the arm before lowering it."""
     def _close():
         time.sleep(delay_seconds)
         safe_close_gate(gate_name)
@@ -287,7 +307,7 @@ def initialize_system():
 
 
 # ==============================================================================
-# WEBHOOK EVENT HANDLER
+# WEBHOOK EVENT HANDLER (NO AUTH REQUIRED FOR SIMULATOR)
 # ==============================================================================
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook_listener():
@@ -317,15 +337,13 @@ def webhook_listener():
 
         safe_plate = urllib.parse.quote(car_plate)
 
-        # A. Entrance Arrival -> Lift gateA, wait 1.5s for arm to rise, then dispatch
+        # A. Entrance Arrival
         if spot_type == "EntrySpot" and direction == "CarIn":
             target_spot = allocate_parking_spot(car_type)
             if target_spot:
                 active_cars[car_plate] = {
-                    "spot": target_spot,
-                    "type": car_type,
-                    "duration": duration,
-                    "charged": False
+                    "spot": target_spot, "type": car_type,
+                    "duration": duration, "charged": False
                 }
                 log_car_entry(car_plate, car_type, target_spot)
                 print(f"\n[ENTRY] Admitting '{car_plate}' ({car_type}) -> Bay '{target_spot}'")
@@ -341,24 +359,25 @@ def webhook_listener():
             else:
                 print(f"[ENTRY REJECT] Lot full for '{car_plate}'!")
 
-        # B. Cleared entry box -> Delay close of gateA by 3.0s
+        # B. Cleared entry box
         elif spot_type == "EntrySpot" and direction == "CarOut":
             print(f"[GATE] Car cleared entry box. Delaying close of '{entry_gate_name}' by 3s...")
             delayed_close_gate(entry_gate_name, delay_seconds=3.0)
 
-        # C. Finished parking & leaves bay -> Direct to EXIT
+        # C. Finished parking -> Direct to EXIT
         elif spot_type == "Park" and direction == "CarOut":
             with state_lock:
                 reserved_spots.discard(spot_name)
             print(f"\n[PARK FINISHED] '{car_plate}' left bay '{spot_name}'. Directing to EXIT...")
             call_simulator_api("POST", f"/car/{safe_plate}/goto/exit")
 
-        # D. Arrived at Exit Box -> Wait 1.5s for full stop -> LOG TO DB & CHARGE!
+        # D. Arrived at Exit Box -> Wait for full stop -> CHARGE
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarIn":
             safe_close_gate(exit_gate_name)
 
             car_info = active_cars.get(car_plate, {})
-            duration = max(1, car_info.get("duration", 1))
+            elapsed_seconds = time.time() - car_info.get("entry_timestamp", time.time())
+            duration = max(1, int(elapsed_seconds / 60))
             is_electric = (car_info.get("type") == "Electric")
 
             parking_cost = float(duration)
@@ -366,7 +385,6 @@ def webhook_listener():
             total_fee = parking_cost + charging_cost
             car_info["expected_cost"] = total_fee
 
-            # LOG EXIT TIME & FEE TO DATABASE IMMEDIATELY
             log_car_exit(car_plate, parking_cost, charging_cost, total_fee)
 
             if not car_info.get("charged"):
@@ -387,7 +405,7 @@ def webhook_listener():
             safe_close_gate(exit_gate_name)
             active_cars.pop(car_plate, None)
 
-    # 2. Payment confirmed -> Lift gateB, wait 1.5s, dispatch to leavepark, auto-close!
+    # 2. Payment confirmed -> Lift gateB -> Leave Park
     elif event_class == "payment_made":
         car_plate = data.get("CarPlateNumber")
         car_info = active_cars.get(car_plate, {})
@@ -406,7 +424,6 @@ def webhook_listener():
         if c_cost < 0: 
             c_cost = 0.0
 
-        # Update database with exact paid amount if different
         log_car_exit(car_plate, p_cost, c_cost, amount)
 
         print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{exit_gate_name}'...")
@@ -456,209 +473,61 @@ def webhook_listener():
 
 
 # ==============================================================================
-# WEB DASHBOARD (http://127.0.0.1:5000)
+# WEB DASHBOARD ROUTES (HTML RENDERING & AUTH)
 # ==============================================================================
-DASHBOARD_HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Ctrl Alt Everything - Car Park Dashboard</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
-        h1, h2 { color: #00adb5; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; }
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
         
-        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin: 20px 0; }
-        
-        .stat-card { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #00adb5; }
-        .stat-val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #eeeeee; }
-        .controls { background: #222831; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-        button { background: #00adb5; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; font-weight: bold; }
-        button:hover { background: #007c82; }
-        .btn-danger { background: #d9534f; }
-        .btn-danger:hover { background: #c9302c; }
-        .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin: 20px 0; }
-        .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; transition: background 0.3s; }
-        .bay.occupied { background: #d9534f; color: white; }
-        .bay.free { background: #5cb85c; color: white; }
-        .bay.broken { background: #f0ad4e; color: black; font-weight: bold; }
-        table { width: 100%; border-collapse: collapse; background: #222831; border-radius: 8px; overflow: hidden; margin-top: 10px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #393e46; }
-        th { background: #2a313d; color: #00adb5; }
-        .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-        .badge-parked { background: #5bc0de; color: white; }
-        .badge-done { background: #5cb85c; color: white; }
-        .filter-container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
-        .filter-controls { display: flex; gap: 10px; align-items: center; }
-        input[type="text"], select { padding: 6px; border-radius: 4px; background: #393e46; color: white; border: 1px solid #00adb5; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>🅿️ Ctrl Alt Everything — Command Center</h1>
-        <div><strong>Operator Mode:</strong> Active</div>
-    </div>
-
-    <!-- Ensure only 5 cards exist in the grid -->
-    <div class="stats-grid">
-        <div class="stat-card"><div>Available Spots</div><div class="stat-val" id="free-spots">-- / 30</div></div>
-        <div class="stat-card"><div>Gate A (Entrance)</div><div class="stat-val" id="gate-a">--</div></div>
-        <div class="stat-card"><div>Gate B (Exit)</div><div class="stat-val" id="gate-b">--</div></div>
-        <div class="stat-card"><div>Total Penalties</div><div class="stat-val" style="color:#d9534f;" id="penalties">0</div></div>
-        <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
-    </div>
-
-    <div class="controls">
-        <h2>Manual Operator Override</h2>
-        <button onclick="controlGate('gateA', 'open')">Open Gate A</button>
-        <button onclick="controlGate('gateA', 'close')">Close Gate A</button>
-        <button onclick="controlGate('gateA', 'repair')">Repair Gate A</button>
-        <button onclick="controlGate('gateB', 'open')">Open Gate B</button>
-        <button onclick="controlGate('gateB', 'close')">Close Gate B</button>
-        <button onclick="controlGate('gateB', 'repair')">Repair Gate B</button>
-        <button onclick="resetPenalties()" class="btn-danger" style="margin-left: 20px;">Reset Penalties</button>
-    </div>
-
-    <h2>Live Parking Bays (Zone 1)</h2>
-    <div class="bays-grid" id="bays-container"></div>
-
-    <div class="filter-container">
-        <h2>Recent Activity (Database)</h2>
-        <div class="filter-controls">
-            <input type="text" id="search-plate" placeholder="Search Plate..." onkeyup="renderLogs()">
+        user = SYSTEM_USERS.get(username)
+        if user and user["password"] == password:
+            session["username"] = username
+            session["role"] = user["role"]
             
-            <label for="sort-filter"><strong>Sort: </strong></label>
-            <select id="sort-filter" onchange="renderLogs()">
-                <option value="time_desc">Time (Newest First)</option>
-                <option value="time_asc">Time (Oldest First)</option>
-                <option value="plate_asc">Plate (A-Z)</option>
-                <option value="plate_desc">Plate (Z-A)</option>
-            </select>
-
-            <label for="status-filter"><strong>Status: </strong></label>
-            <select id="status-filter" onchange="renderLogs()">
-                <option value="All">All</option>
-                <option value="Parked">Parked</option>
-                <option value="Completed">Completed</option>
-            </select>
-        </div>
-    </div>
-    
-    <table>
-        <thead>
-            <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Total Fee</th><th>Status</th></tr>
-        </thead>
-        <tbody id="logs-tbody"></tbody>
-    </table>
-
-    <script>
-        let currentLogs = [];
-
-        async function fetchStatus() {
-            const res = await fetch('/api/dashboard/status');
-            const data = await res.json();
+            if user["role"] == "admin":
+                return redirect(url_for("admin_dashboard"))
+            else:
+                return redirect(url_for("operator_dashboard"))
+        else:
+            error = "Invalid credentials. Please try again."
             
-            document.getElementById('free-spots').innerText = `${data.free_spots} / 30`;
-            document.getElementById('gate-a').innerText = data.gate_a;
-            document.getElementById('gate-b').innerText = data.gate_b;
-            document.getElementById('penalties').innerText = `${data.penalties_count} (-${data.penalties_total})`;
-            document.getElementById('revenue').innerText = `$${Number(data.total_revenue).toFixed(2)}`;
+    return render_template("login.html", error=error)
 
-            const container = document.getElementById('bays-container');
-            container.innerHTML = '';
-            data.spots.forEach(s => {
-                const d = document.createElement('div');
-                let isOccupied = false;
-                if (typeof s.detectedCars === 'number') isOccupied = s.detectedCars > 0;
-                else if (Array.isArray(s.detectedCars)) isOccupied = s.detectedCars.length > 0;
-                if (data.reserved_spots.includes(s.name)) isOccupied = true;
-
-                let cls = 'bay free';
-                if (s.broken) cls = 'bay broken';
-                else if (isOccupied) cls = 'bay occupied';
-                
-                d.className = cls;
-                d.innerHTML = `<strong>${s.name}</strong><br>${s.parkingForCarType}`;
-                container.appendChild(d);
-            });
-
-            currentLogs = data.logs;
-            renderLogs();
-        }
-
-        function renderLogs() {
-            const filter = document.getElementById('status-filter').value;
-            const searchPlate = document.getElementById('search-plate').value.toLowerCase();
-            const sortMethod = document.getElementById('sort-filter').value;
-            const tbody = document.getElementById('logs-tbody');
-            tbody.innerHTML = '';
-
-            // Filter logic
-            let filteredLogs = currentLogs.filter(l => {
-                const plate = (l[1] || '').toLowerCase();
-                const status = l[9];
-                
-                if (searchPlate && !plate.includes(searchPlate)) return false;
-                if (filter !== 'All' && status !== filter) return false;
-                return true;
-            });
-
-            // Sort logic
-            filteredLogs.sort((a, b) => {
-                if (sortMethod.startsWith('plate')) {
-                    const plateA = (a[1] || '').toLowerCase();
-                    const plateB = (b[1] || '').toLowerCase();
-                    if (sortMethod === 'plate_asc') return plateA.localeCompare(plateB);
-                    return plateB.localeCompare(plateA);
-                } else {
-                    // Time sorting using latest of exit_time or entry_time
-                    const timeA = a[5] || a[4] || "";
-                    const timeB = b[5] || b[4] || "";
-                    if (sortMethod === 'time_desc') return timeB.localeCompare(timeA);
-                    return timeA.localeCompare(timeB);
-                }
-            });
-
-            filteredLogs.forEach(l => {
-                const status = l[9];
-                const tr = document.createElement('tr');
-                const feeFormatted = l[8] != null ? `$${Number(l[8]).toFixed(2)}` : '$0.00';
-                tr.innerHTML = `<td><strong>${l[1]}</strong></td>
-                                <td>${l[2]}</td>
-                                <td>${l[3]}</td>
-                                <td>${l[4] || '--'}</td>
-                                <td>${l[5] || '--'}</td>
-                                <td>${feeFormatted}</td>
-                                <td><span class="badge badge-${status === 'Parked' ? 'parked' : 'done'}">${status}</span></td>`;
-                tbody.appendChild(tr);
-            });
-        }
-
-        async function controlGate(name, action) {
-            await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
-            fetchStatus();
-        }
-
-        async function resetPenalties() {
-            if(confirm("Are you sure you want to clear all penalty records?")) {
-                await fetch(`/api/operator/penalties/reset`, { method: 'POST' });
-                fetchStatus();
-            }
-        }
-
-        setInterval(fetchStatus, 1500);
-        fetchStatus();
-    </script>
-</body>
-</html>
-"""
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 @app.route("/", methods=["GET"])
-def dashboard():
-    return render_template_string(DASHBOARD_HTML)
+@login_required
+def root():
+    if session.get("role") == "admin":
+        return redirect(url_for("admin_dashboard"))
+    return redirect(url_for("operator_dashboard"))
+
+@app.route("/operator", methods=["GET"])
+@login_required
+def operator_dashboard():
+    # Render the old DASHBOARD_HTML which you put into templates/operator.html
+    return render_template("operator.html", username=session.get("username"))
+
+@app.route("/admin", methods=["GET"])
+@admin_required
+def admin_dashboard():
+    # Render the new templates/admin.html
+    return render_template("admin.html", username=session.get("username"))
+
+
+# ==============================================================================
+# API ENDPOINTS FOR DASHBOARD (PROTECTED)
+# ==============================================================================
 
 @app.route("/api/dashboard/status", methods=["GET"])
+@login_required
 def dashboard_status():
     spots = call_simulator_api("GET", "/list-parking-spots") or []
     barriers = call_simulator_api("GET", "/list-barriers") or []
@@ -673,7 +542,6 @@ def dashboard_status():
         free_spots = sum(1 for s in spots if s.get("purpose") == "Park" and is_spot_empty(s) and not s.get("broken") and s.get("name") not in reserved_spots)
         curr_reserved = list(reserved_spots)
 
-    # Natural Sort algorithm to keep bays fixed in position
     valid_spots = [s for s in spots if s.get("purpose") == "Park"]
     def natural_sort_key(s):
         return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s.get("name", ""))]
@@ -682,7 +550,6 @@ def dashboard_status():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # Fetch logs
     c.execute('''
         SELECT * FROM car_logs 
         ORDER BY CASE WHEN exit_time IS NOT NULL THEN exit_time ELSE entry_time END DESC 
@@ -690,14 +557,11 @@ def dashboard_status():
     ''')
     logs = c.fetchall()
     
-    # Fetch penalties
     c.execute("SELECT COUNT(*), COALESCE(SUM(fine_amount), 0) FROM penalty_logs")
     p_count, p_total = c.fetchone()
     
-    # Fetch total revenue (Sum of total_paid for Completed sessions)
     c.execute("SELECT COALESCE(SUM(total_paid), 0) FROM car_logs WHERE status = 'Completed'")
     total_revenue = c.fetchone()[0]
-
     conn.close()
 
     return jsonify({
@@ -713,14 +577,15 @@ def dashboard_status():
     })
 
 @app.route("/api/operator/gate/<name>/<action>", methods=["POST"])
+@login_required
 def operator_gate(name, action):
     if action == "repair": call_simulator_api("POST", f"/barrier-gates/{name}/repair")
     elif action == "open": safe_open_gate(name)
     elif action == "close": safe_close_gate(name)
     return jsonify({"status": "ok"})
 
-# Reset Penalties Endpoint
 @app.route("/api/operator/penalties/reset", methods=["POST"])
+@login_required
 def operator_reset_penalties():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()

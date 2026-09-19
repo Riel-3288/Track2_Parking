@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: white; padding: 20px; }
+        .header { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛠️ System Administration</h1>
+        <div>
+            <strong>Admin:</strong> {{ username }} | 
+            <a href="/logout" style="color: #d9534f;">Logout</a>
+        </div>
+    </div>
+    
+    <h2>Welcome to the Admin Panel</h2>
+    <p>Here you can view overall revenue analytics, manage users, or export reports (Future features).</p>
+    
+    <!-- Admin 也可以随时跳转去 Operator 页面帮忙操作 -->
+    <a href="/operator" style="color: #00adb5;">Go to Operator View</a>
+</body>
+</html>

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Ctrl Alt Everything - Car Park Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        h1, h2 { color: #00adb5; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin: 20px 0; }
+        
+        .stat-card { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #00adb5; }
+        .stat-val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #eeeeee; }
+        .controls { background: #222831; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        button { background: #00adb5; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; font-weight: bold; }
+        button:hover { background: #007c82; }
+        .btn-danger { background: #d9534f; }
+        .btn-danger:hover { background: #c9302c; }
+        .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin: 20px 0; }
+        .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; transition: background 0.3s; }
+        .bay.occupied { background: #d9534f; color: white; }
+        .bay.free { background: #5cb85c; color: white; }
+        .bay.broken { background: #f0ad4e; color: black; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; background: #222831; border-radius: 8px; overflow: hidden; margin-top: 10px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #393e46; }
+        th { background: #2a313d; color: #00adb5; }
+        .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+        .badge-parked { background: #5bc0de; color: white; }
+        .badge-done { background: #5cb85c; color: white; }
+        .filter-container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+        .filter-controls { display: flex; gap: 10px; align-items: center; }
+        input[type="text"], select { padding: 6px; border-radius: 4px; background: #393e46; color: white; border: 1px solid #00adb5; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🅿️ Ctrl Alt Everything — Command Center</h1>
+        <div><strong>Operator Mode:</strong> Active</div>
+    </div>
+
+    <!-- Ensure only 5 cards exist in the grid -->
+    <div class="stats-grid">
+        <div class="stat-card"><div>Available Spots</div><div class="stat-val" id="free-spots">-- / 30</div></div>
+        <div class="stat-card"><div>Gate A (Entrance)</div><div class="stat-val" id="gate-a">--</div></div>
+        <div class="stat-card"><div>Gate B (Exit)</div><div class="stat-val" id="gate-b">--</div></div>
+        <div class="stat-card"><div>Total Penalties</div><div class="stat-val" style="color:#d9534f;" id="penalties">0</div></div>
+        <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
+    </div>
+
+    <div class="controls">
+        <h2>Manual Operator Override</h2>
+        <button onclick="controlGate('gateA', 'open')">Open Gate A</button>
+        <button onclick="controlGate('gateA', 'close')">Close Gate A</button>
+        <button onclick="controlGate('gateA', 'repair')">Repair Gate A</button>
+        <button onclick="controlGate('gateB', 'open')">Open Gate B</button>
+        <button onclick="controlGate('gateB', 'close')">Close Gate B</button>
+        <button onclick="controlGate('gateB', 'repair')">Repair Gate B</button>
+        <button onclick="resetPenalties()" class="btn-danger" style="margin-left: 20px;">Reset Penalties</button>
+    </div>
+
+    <h2>Live Parking Bays (Zone 1)</h2>
+    <div class="bays-grid" id="bays-container"></div>
+
+    <div class="filter-container">
+        <h2>Recent Activity (Database)</h2>
+        <div class="filter-controls">
+            <input type="text" id="search-plate" placeholder="Search Plate..." onkeyup="renderLogs()">
+            
+            <label for="sort-filter"><strong>Sort: </strong></label>
+            <select id="sort-filter" onchange="renderLogs()">
+                <option value="time_desc">Time (Newest First)</option>
+                <option value="time_asc">Time (Oldest First)</option>
+                <option value="plate_asc">Plate (A-Z)</option>
+                <option value="plate_desc">Plate (Z-A)</option>
+            </select>
+
+            <label for="status-filter"><strong>Status: </strong></label>
+            <select id="status-filter" onchange="renderLogs()">
+                <option value="All">All</option>
+                <option value="Parked">Parked</option>
+                <option value="Completed">Completed</option>
+            </select>
+        </div>
+    </div>
+    
+    <table>
+        <thead>
+            <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Total Fee</th><th>Status</th></tr>
+        </thead>
+        <tbody id="logs-tbody"></tbody>
+    </table>
+
+    <script>
+        let currentLogs = [];
+
+        async function fetchStatus() {
+            const res = await fetch('/api/dashboard/status');
+            const data = await res.json();
+            
+            document.getElementById('free-spots').innerText = `${data.free_spots} / 30`;
+            document.getElementById('gate-a').innerText = data.gate_a;
+            document.getElementById('gate-b').innerText = data.gate_b;
+            document.getElementById('penalties').innerText = `${data.penalties_count} (-${data.penalties_total})`;
+            document.getElementById('revenue').innerText = `$${Number(data.total_revenue).toFixed(2)}`;
+
+            const container = document.getElementById('bays-container');
+            container.innerHTML = '';
+            data.spots.forEach(s => {
+                const d = document.createElement('div');
+                let isOccupied = false;
+                if (typeof s.detectedCars === 'number') isOccupied = s.detectedCars > 0;
+                else if (Array.isArray(s.detectedCars)) isOccupied = s.detectedCars.length > 0;
+                if (data.reserved_spots.includes(s.name)) isOccupied = true;
+
+                let cls = 'bay free';
+                if (s.broken) cls = 'bay broken';
+                else if (isOccupied) cls = 'bay occupied';
+                
+                d.className = cls;
+                d.innerHTML = `<strong>${s.name}</strong><br>${s.parkingForCarType}`;
+                container.appendChild(d);
+            });
+
+            currentLogs = data.logs;
+            renderLogs();
+        }
+
+        function renderLogs() {
+            const filter = document.getElementById('status-filter').value;
+            const searchPlate = document.getElementById('search-plate').value.toLowerCase();
+            const sortMethod = document.getElementById('sort-filter').value;
+            const tbody = document.getElementById('logs-tbody');
+            tbody.innerHTML = '';
+
+            // Filter logic
+            let filteredLogs = currentLogs.filter(l => {
+                const plate = (l[1] || '').toLowerCase();
+                const status = l[9];
+                
+                if (searchPlate && !plate.includes(searchPlate)) return false;
+                if (filter !== 'All' && status !== filter) return false;
+                return true;
+            });
+
+            // Sort logic
+            filteredLogs.sort((a, b) => {
+                if (sortMethod.startsWith('plate')) {
+                    const plateA = (a[1] || '').toLowerCase();
+                    const plateB = (b[1] || '').toLowerCase();
+                    if (sortMethod === 'plate_asc') return plateA.localeCompare(plateB);
+                    return plateB.localeCompare(plateA);
+                } else {
+                    // Time sorting using latest of exit_time or entry_time
+                    const timeA = a[5] || a[4] || "";
+                    const timeB = b[5] || b[4] || "";
+                    if (sortMethod === 'time_desc') return timeB.localeCompare(timeA);
+                    return timeA.localeCompare(timeB);
+                }
+            });
+
+            filteredLogs.forEach(l => {
+                const status = l[9];
+                const tr = document.createElement('tr');
+                const feeFormatted = l[8] != null ? `$${Number(l[8]).toFixed(2)}` : '$0.00';
+                tr.innerHTML = `<td><strong>${l[1]}</strong></td>
+                                <td>${l[2]}</td>
+                                <td>${l[3]}</td>
+                                <td>${l[4] || '--'}</td>
+                                <td>${l[5] || '--'}</td>
+                                <td>${feeFormatted}</td>
+                                <td><span class="badge badge-${status === 'Parked' ? 'parked' : 'done'}">${status}</span></td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function controlGate(name, action) {
+            await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
+            fetchStatus();
+        }
+
+        async function resetPenalties() {
+            if(confirm("Are you sure you want to clear all penalty records?")) {
+                await fetch(`/api/operator/penalties/reset`, { method: 'POST' });
+                fetchStatus();
+            }
+        }
+
+        setInterval(fetchStatus, 1500);
+        fetchStatus();
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

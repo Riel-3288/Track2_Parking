@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login - Parking System</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .login-box { background: #222831; padding: 30px; border-radius: 8px; border-top: 5px solid #00adb5; }
+        input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
+        button { width: 100%; padding: 10px; background: #00adb5; color: white; border: none; cursor: pointer; }
+        .error { color: #d9534f; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h2>System Login</h2>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        <form method="POST">
+            <input type="text" name="username" placeholder="Username" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <button type="submit">Login</button>
+        </form>
+    </div>
+</body>
+</html>
