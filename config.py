@@ -1,6 +1,8 @@
 import os
 import threading
 
+WEBHOOK_REQUIRE_SIGNATURE = True  # require signature verification for incoming webhooks
+
 # ==============================================================================
 # CONFIGURATION & ABSOLUTE PATHS
 # ==============================================================================

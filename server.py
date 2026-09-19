@@ -7,6 +7,7 @@ import config
 import auth
 import database
 import simulator
+import math
 
 app = Flask(__name__)
 app.secret_key = "ctrl_alt_everything_super_secret_key" 
@@ -22,7 +23,18 @@ def webhook_listener():
     if request.method == "GET":
         return jsonify({"status": "online"}), 200
 
+    raw_body = request.get_data()
     data = request.get_json(force=True, silent=True) or {}
+    event_class = data.get("EventClass")
+
+    ok, reason = auth.verify_webhook_signature(data)
+    database.log_webhook_call(request.remote_addr, event_class, bool(data.get("Signature")), reason)
+
+    if not ok:
+        print(f"⚠️  [UNSIGNED/INVALID WEBHOOK] from {request.remote_addr} | {event_class} | {reason}")
+        if config.WEBHOOK_REQUIRE_SIGNATURE:
+            return jsonify({"status": "error", "message": "invalid or missing signature"}), 401
+
     event_id = data.get("EventId")
     event_class = data.get("EventClass")
 
@@ -79,15 +91,30 @@ def webhook_listener():
 
         # C1. Car physically enters parking bay -> Capture exact planned stay if updated!
         elif spot_type == "Park" and direction == "CarIn":
-            if planned_duration > 0:
+
                 car_info = config.active_cars.setdefault(raw_plate, {})
-                car_info["duration"] = planned_duration
+
+                # Start actual parking timer when car completely enters the parking bay
+                car_info["parking_start_time"] = time.time()
+
                 print(f"[PARK DOCKED] '{raw_plate}' parked in '{spot_name}'. Simulator stay duration: {planned_duration} mins.")
 
         # C2. Finished parking & leaves bay -> Direct to EXIT & release reservation
         elif spot_type == "Park" and direction == "CarOut":
+
+            car_info = config.active_cars.get(raw_plate, {})
+
+            start_time = car_info.get("parking_start_time")
+
+            if start_time:
+                parking_seconds = time.time() - start_time
+                parking_minutes = parking_seconds / 60
+                car_info["actual_duration"] = parking_minutes
+                print(f"actual parking duration for '{raw_plate}' was {parking_minutes:.2f} mins.")
+
             with config.state_lock:
                 config.reserved_spots.discard(spot_name)
+
             print(f"\n[PARK FINISHED] '{raw_plate}' left bay '{spot_name}'. Directing to EXIT...")
             simulator.call_simulator_api("POST", f"/car/{nospace_plate}/goto/exit")
 
@@ -97,14 +124,13 @@ def webhook_listener():
             simulator.safe_close_gate(target_gate)
 
             car_info = config.active_cars.get(raw_plate, {})
-            car_info["exit_gate"] = target_gate  # 记住它是从哪个门出去的，付款后开这个门
-            
-            duration = max(1, int(car_info.get("duration", 1)))
+            duration = max(1, math.ceil(car_info.get("actual_duration", 1)))
             is_electric = (car_info.get("type") == "Electric")
 
             parking_cost = float(duration)
-            charging_cost = float(duration * 2) if is_electric else 0.0
+            charging_cost = float(duration) if is_electric else 0.0
             total_fee = parking_cost + charging_cost
+            print(f"The total fee for '{raw_plate}' is ${total_fee:.2f} (Parking=${parking_cost:.2f}, Charging=${charging_cost:.2f})")
 
             car_info["parking_cost"] = parking_cost
             car_info["charging_cost"] = charging_cost
@@ -211,18 +237,24 @@ def login():
         password = request.form.get("password")
         
         users = auth.load_users()
-        
+
+        ip = request.remote_addr
+
         if action == "login":
             user = users.get(username)
             if user and user["password"] == password:
+                history = database.get_recent_logins(username, 3) 
+                database.log_login_attempt(username, True, ip, "login_success")
+
                 session["username"] = username
                 session["role"] = user["role"]
-                
-                if user["role"] == "admin":
-                    return redirect(url_for("admin_dashboard"))
-                else:
-                    return redirect(url_for("operator_dashboard"))
+                session["last_logins"] = history
+
+                return redirect(url_for("admin_dashboard" if user["role"] == "admin"
+                                        else "operator_dashboard"))
             else:
+                reason = "unknown_user" if not user else "wrong_password"
+                database.log_login_attempt(username or "(blank)", False, ip, reason)
                 error = "Invalid credentials. Please try again."
                 
         elif action == "signup":
@@ -399,5 +431,7 @@ if __name__ == "__main__":
     print("  Exit Time & Fee Logging Active | Dashboard Synchronized")
     print("  Live Command Center: http://127.0.0.1:5000")
     print("=" * 65)
+
+    simulator.handle_carbon_monoxide_event("Safe")
 
     app.run(host="0.0.0.0", port=5000, debug=False)

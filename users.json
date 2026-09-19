@@ -6,5 +6,9 @@
     "operator": {
         "password": "operator",
         "role": "operator"
+    },
+    "testadmin": {
+        "password": "123",
+        "role": "admin"
     }
 }

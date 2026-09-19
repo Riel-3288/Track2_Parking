@@ -3,6 +3,8 @@ import json
 from functools import wraps
 from flask import session, redirect, url_for, jsonify
 import config
+import hmac
+import hashlib
 
 # ==============================================================================
 # RBAC: ROLE -> PERMISSIONS MAPPING
@@ -72,3 +74,41 @@ def permission_required(permission_name):
         return decorated_function  
         
     return decorator
+
+
+# ==============================================================================
+# WEBHOOK SIGNATURE VERIFICATION
+# ==============================================================================
+def _md5(s):
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+def compute_webhook_signature(data: dict) -> str:
+    """
+    Compute the expected signature for the webhook data.
+    """
+    keys = sorted(k for k in data.keys() if k != "Signature")
+    joined = "|".join(str(data[k]) for k in keys)
+    return hashlib.md5(joined.encode("utf-8")).hexdigest()
+
+def verify_webhook_signature(data: dict):
+    """
+    Verify the webhook signature using HMAC and a secret key.
+    """
+    provided = (data.get("Signature") or "").strip().lower()
+    if not provided:
+        return False, "missing_signature"
+
+    expected = compute_webhook_signature(data)
+    if hmac.compare_digest(expected, provided):
+        return True, "verified"
+    return False, "bad_signature"
+    if not config.WEBHOOK_VERIFY_ALGORITHM:
+        return True, "signature_present"     
+
+    event_id = str(data.get("EventId", ""))
+    seq_id = str(data.get("SequenceId", ""))
+    expected = _md5(f"{event_id}{seq_id}{config.WEBHOOK_SECRET}")  
+
+    if hmac.compare_digest(expected, provided):
+        return True, "verified"
+    return False, "bad_signature"
