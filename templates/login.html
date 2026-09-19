@@ -1,24 +1,138 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Login - Parking System</title>
+    <meta charset="UTF-8">
+    <title>Login - Ctrl Alt Everything</title>
     <style>
-        body { font-family: sans-serif; background: #121212; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        .login-box { background: #222831; padding: 30px; border-radius: 8px; border-top: 5px solid #00adb5; }
-        input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
-        button { width: 100%; padding: 10px; background: #00adb5; color: white; border: none; cursor: pointer; }
-        .error { color: #d9534f; margin-bottom: 10px; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, sans-serif; 
+            background: #121212; 
+            color: #e0e0e0; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            margin: 0; 
+        }
+        .login-box { 
+            background: #222831; 
+            padding: 40px; 
+            border-radius: 8px; 
+            border-top: 5px solid #00adb5; 
+            width: 350px; 
+            box-shadow: 0 8px 20px rgba(0,0,0,0.6); 
+            text-align: center; 
+            position: relative;
+            overflow: hidden;
+        }
+        h2 { color: #00adb5; margin-top: 0; margin-bottom: 10px; }
+        .subtitle { color: #aaaaaa; font-size: 14px; margin-bottom: 25px; }
+        
+        .role-selector { display: flex; justify-content: space-between; margin-bottom: 20px; }
+        .role-btn { 
+            flex: 1; padding: 10px; margin: 0 5px; background: #393e46; 
+            color: white; border: 2px solid transparent; cursor: pointer; 
+            border-radius: 4px; transition: 0.3s; font-weight: bold;
+        }
+        .role-btn:hover { background: #4a525d; }
+        .role-btn.active { border-color: #00adb5; background: #2a313d; color: #00adb5; }
+        
+        input, select { 
+            width: 100%; padding: 12px; margin: 10px 0; box-sizing: border-box; 
+            background: #393e46; border: 1px solid #555; color: white; 
+            border-radius: 4px; font-size: 15px;
+        }
+        input:focus, select:focus { outline: none; border-color: #00adb5; }
+        
+        button[type="submit"] { 
+            width: 100%; padding: 12px; background: #00adb5; color: white; 
+            border: none; cursor: pointer; border-radius: 4px; font-weight: bold; 
+            font-size: 16px; margin-top: 15px; transition: 0.3s; 
+        }
+        button[type="submit"]:hover { background: #007c82; }
+        
+        .error { 
+            color: #ff6b6b; margin-bottom: 15px; background: #3a1c1c; 
+            padding: 10px; border-radius: 4px; font-size: 14px; 
+        }
+        .toggle-link {
+            display: block; margin-top: 20px; color: #00adb5; 
+            font-size: 14px; text-decoration: none; cursor: pointer;
+        }
+        .toggle-link:hover { text-decoration: underline; }
+        
+        /* Form toggling */
+        #signup-form { display: none; }
     </style>
 </head>
 <body>
     <div class="login-box">
-        <h2>System Login</h2>
-        {% if error %}<div class="error">{{ error }}</div>{% endif %}
-        <form method="POST">
-            <input type="text" name="username" placeholder="Username" required>
-            <input type="password" name="password" placeholder="Password" required>
-            <button type="submit">Login</button>
-        </form>
+        <h2>🅿️ Command Center</h2>
+        <div class="subtitle" id="form-subtitle">Please select your role to login</div>
+        
+        {% if error %}
+        <div class="error">⚠️ {{ error }}</div>
+        {% endif %}
+
+        <!-- LOGIN FORM -->
+        <div id="login-form">
+            <div class="role-selector">
+                <button type="button" class="role-btn active" onclick="quickFill('operator', this)">Operator</button>
+                <button type="button" class="role-btn" onclick="quickFill('admin', this)">Admin</button>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="action" value="login">
+                <input type="text" id="login-username" name="username" placeholder="Username" value="operator" required>
+                <input type="password" id="login-password" name="password" placeholder="Password" value="operator" required>
+                <button type="submit">Secure Login</button>
+            </form>
+            <a class="toggle-link" onclick="toggleForms('signup')">Don't have an account? Sign Up</a>
+        </div>
+
+        <!-- SIGN UP FORM -->
+        <div id="signup-form">
+            <form method="POST">
+                <input type="hidden" name="action" value="signup">
+                <input type="text" name="username" placeholder="Choose a Username" required>
+                <input type="password" name="password" placeholder="Create a Password" required>
+                <select name="role" required>
+                    <option value="" disabled selected>Select Role</option>
+                    <option value="operator">Operator</option>
+                    <option value="admin">Admin</option>
+                </select>
+                <button type="submit">Create Account</button>
+            </form>
+            <a class="toggle-link" onclick="toggleForms('login')">Already have an account? Login</a>
+        </div>
     </div>
+
+    <script>
+        // 快速填入账号密码 (用于 Login 界面)
+        function quickFill(role, btnElement) {
+            const buttons = document.querySelectorAll('.role-btn');
+            buttons.forEach(btn => btn.classList.remove('active'));
+            btnElement.classList.add('active');
+            
+            document.getElementById('login-username').value = role;
+            document.getElementById('login-password').value = role;
+        }
+
+        // 切换 Login 和 Sign Up 界面
+        function toggleForms(target) {
+            const loginForm = document.getElementById('login-form');
+            const signupForm = document.getElementById('signup-form');
+            const subtitle = document.getElementById('form-subtitle');
+
+            if (target === 'signup') {
+                loginForm.style.display = 'none';
+                signupForm.style.display = 'block';
+                subtitle.innerText = "Register a new system account";
+            } else {
+                signupForm.style.display = 'none';
+                loginForm.style.display = 'block';
+                subtitle.innerText = "Please select your role to login";
+            }
+        }
+    </script>
 </body>
 </html>

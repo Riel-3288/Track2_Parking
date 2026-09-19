@@ -7,10 +7,32 @@ import re
 import requests
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for
+import json
+import os
 
 app = Flask(__name__)
 # secret_key
 app.secret_key = "ctrl_alt_everything_super_secret_key" 
+
+USERS_FILE = "users.json"
+
+def load_users():
+    """从 JSON 文件加载用户，如果文件不存在则自动创建默认的 admin 和 operator"""
+    if not os.path.exists(USERS_FILE):
+        default_users = {
+            "admin": {"password": "admin", "role": "admin"},
+            "operator": {"password": "operator", "role": "operator"}
+        }
+        save_users(default_users)
+        return default_users
+    
+    with open(USERS_FILE, 'r') as f:
+        return json.load(f)
+
+def save_users(users):
+    """将新用户保存到 JSON 文件"""
+    with open(USERS_FILE, 'w') as f:
+        json.dump(users, f, indent=4)
 
 # ==============================================================================
 # CONFIGURATION
@@ -480,20 +502,43 @@ def webhook_listener():
 def login():
     error = None
     if request.method == "POST":
-        username = request.form.get("username")
+        action = request.form.get("action") 
+        username = request.form.get("username").strip()
         password = request.form.get("password")
         
-        user = SYSTEM_USERS.get(username)
-        if user and user["password"] == password:
-            session["username"] = username
-            session["role"] = user["role"]
-            
-            if user["role"] == "admin":
-                return redirect(url_for("admin_dashboard"))
+        users = load_users()
+        
+        if action == "login":
+            user = users.get(username)
+            if user and user["password"] == password:
+                session["username"] = username
+                session["role"] = user["role"]
+                
+                if user["role"] == "admin":
+                    return redirect(url_for("admin_dashboard"))
+                else:
+                    return redirect(url_for("operator_dashboard"))
             else:
-                return redirect(url_for("operator_dashboard"))
-        else:
-            error = "Invalid credentials. Please try again."
+                error = "Invalid credentials. Please try again."
+                
+        elif action == "signup":
+            role = request.form.get("role")
+            if username in users:
+                error = "Username already exists! Please choose another."
+            elif not username or not password:
+                error = "Username and Password cannot be empty."
+            else:
+
+                users[username] = {"password": password, "role": role}
+                save_users(users)
+                
+
+                session["username"] = username
+                session["role"] = role
+                if role == "admin":
+                    return redirect(url_for("admin_dashboard"))
+                else:
+                    return redirect(url_for("operator_dashboard"))
             
     return render_template("login.html", error=error)
 
