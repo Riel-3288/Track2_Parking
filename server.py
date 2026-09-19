@@ -104,6 +104,7 @@ def log_penalty(reason, fine):
 
 # ==============================================================================
 # SAFE SPOT OCCUPANCY CHECK
+# SAFE SPOT OCCUPANCY CHECK
 # ==============================================================================
 def is_spot_empty(spot):
     detected = spot.get("detectedCars")
@@ -375,7 +376,6 @@ def webhook_listener():
         car_info = active_cars.get(car_plate, {})
         safe_plate = urllib.parse.quote(car_plate)
 
-<<<<<<< HEAD
         raw_amount = data.get("Amount")
         if raw_amount is None:
             raw_amount = data.get("amount")
@@ -390,10 +390,6 @@ def webhook_listener():
             c_cost = 0.0
 
         # Update database with exact paid amount if different
-=======
-        p_cost = car_info.get("duration", 1.0)
-        c_cost = car_info.get("expected_cost", 1.0) - p_cost
->>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
         log_car_exit(car_plate, p_cost, c_cost, amount)
 
         print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{exit_gate_name}'...")
@@ -453,18 +449,12 @@ DASHBOARD_HTML = """
     <title>Ctrl Alt Everything - Command Center</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
-<<<<<<< HEAD
         h1, h2 { color: #00adb5; }
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; }
         
         /* Updated grid to 5 columns for the new Total Revenue card */
         .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin: 20px 0; }
         
-=======
-        h1, h2 { color: #00adb5; margin-top: 0; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; margin-bottom: 20px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 25px; }
->>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
         .stat-card { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #00adb5; }
         .stat-val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #eeeeee; }
         .section-card { background: #1e222a; padding: 20px; border-radius: 8px; margin-bottom: 25px; border: 1px solid #2d333b; }
@@ -474,15 +464,10 @@ DASHBOARD_HTML = """
         .controls { background: #222831; padding: 15px; border-radius: 8px; margin-bottom: 25px; }
         button { background: #00adb5; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; font-weight: bold; }
         button:hover { background: #007c82; }
-<<<<<<< HEAD
         .btn-danger { background: #d9534f; }
         .btn-danger:hover { background: #c9302c; }
         .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin: 20px 0; }
         .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; transition: background 0.3s; }
-=======
-        .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin-top: 15px; }
-        .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; }
->>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
         .bay.occupied { background: #d9534f; color: white; }
         .bay.free { background: #5cb85c; color: white; }
         .bay.broken { background: #f0ad4e; color: black; font-weight: bold; }
@@ -511,20 +496,6 @@ DASHBOARD_HTML = """
         <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
     </div>
 
-    <!-- COMPLETED DEPARTURES (NOW AT THE TOP!) -->
-    <div class="section-card">
-        <h2>🏁 Recently Completed Departures (Exit History)</h2>
-        <table>
-            <thead>
-                <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Fee Paid</th><th>Status</th></tr>
-            </thead>
-            <tbody id="completed-tbody">
-                <tr><td colspan="7" style="text-align:center; color:#888;">No completed departures yet</td></tr>
-            </tbody>
-        </table>
-    </div>
-
-    <!-- OPERATOR CONTROLS -->
     <div class="controls">
         <h2>Manual Operator Override</h2>
         <button onclick="controlGate('gateA', 'open')">Open Gate A</button>
@@ -542,7 +513,6 @@ DASHBOARD_HTML = """
         <div class="bays-grid" id="bays-container"></div>
     </div>
 
-<<<<<<< HEAD
     <div class="filter-container">
         <h2>Recent Activity (Database)</h2>
         <div class="filter-controls">
@@ -571,18 +541,6 @@ DASHBOARD_HTML = """
         </thead>
         <tbody id="logs-tbody"></tbody>
     </table>
-=======
-    <!-- ALL RECENT ACTIVITY -->
-    <div class="section-card">
-        <h2>All Recent Activity (Database - Last 25)</h2>
-        <table>
-            <thead>
-                <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Total Fee</th><th>Status</th></tr>
-            </thead>
-            <tbody id="all-logs-tbody"></tbody>
-        </table>
-    </div>
->>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
 
     <script>
         let currentLogs = [];
@@ -597,25 +555,6 @@ DASHBOARD_HTML = """
             document.getElementById('penalties').innerText = `${data.penalties_count} (-${data.penalties_total})`;
             document.getElementById('revenue').innerText = `$${Number(data.total_revenue).toFixed(2)}`;
 
-            // 1. RENDER COMPLETED CARS AT THE VERY TOP
-            const completedTbody = document.getElementById('completed-tbody');
-            if (data.completed_logs.length > 0) {
-                completedTbody.innerHTML = '';
-                data.completed_logs.forEach(l => {
-                    const tr = document.createElement('tr');
-                    const feeFormatted = `$${Number(l[8] || 0).toFixed(2)}`;
-                    tr.innerHTML = `<td><strong style="color:#00adb5;">${l[1]}</strong></td>
-                                    <td>${l[2]}</td>
-                                    <td>${l[3]}</td>
-                                    <td>${l[4] || '--'}</td>
-                                    <td><strong>${l[5] || '--'}</strong></td>
-                                    <td><strong style="color:#5cb85c;">${feeFormatted}</strong></td>
-                                    <td><span class="badge badge-done">Completed</span></td>`;
-                    completedTbody.appendChild(tr);
-                });
-            }
-
-            // 2. RENDER BAYS
             const container = document.getElementById('bays-container');
             container.innerHTML = '';
             data.spots.forEach(s => {
@@ -634,7 +573,6 @@ DASHBOARD_HTML = """
                 container.appendChild(d);
             });
 
-<<<<<<< HEAD
             currentLogs = data.logs;
             renderLogs();
         }
@@ -674,12 +612,6 @@ DASHBOARD_HTML = """
 
             filteredLogs.forEach(l => {
                 const status = l[9];
-=======
-            // 3. RENDER ALL LOGS TABLE
-            const allTbody = document.getElementById('all-logs-tbody');
-            allTbody.innerHTML = '';
-            data.logs.forEach(l => {
->>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
                 const tr = document.createElement('tr');
                 const feeFormatted = l[8] != null ? `$${Number(l[8]).toFixed(2)}` : '$0.00';
                 const isCompleted = l[9] === 'Completed' || (l[5] && l[5] !== '--');
@@ -688,15 +620,9 @@ DASHBOARD_HTML = """
                                 <td>${l[3]}</td>
                                 <td>${l[4] || '--'}</td>
                                 <td>${l[5] || '--'}</td>
-<<<<<<< HEAD
                                 <td>${feeFormatted}</td>
                                 <td><span class="badge badge-${status === 'Parked' ? 'parked' : 'done'}">${status}</span></td>`;
                 tbody.appendChild(tr);
-=======
-                                <td><strong style="color:#5cb85c;">${feeFormatted}</strong></td>
-                                <td><span class="badge badge-${isCompleted ? 'done' : 'parked'}">${isCompleted ? 'Completed' : 'Parked'}</span></td>`;
-                allTbody.appendChild(tr);
->>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
             });
         }
 
@@ -746,7 +672,6 @@ def dashboard_status():
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-<<<<<<< HEAD
     
     # Fetch logs
     c.execute('''
@@ -757,20 +682,6 @@ def dashboard_status():
     logs = c.fetchall()
     
     # Fetch penalties
-=======
-    # 1. Top Section: Only completed departures
-    c.execute("SELECT * FROM car_logs WHERE status = 'Completed' OR exit_time IS NOT NULL ORDER BY id DESC LIMIT 10")
-    completed_logs = c.fetchall()
-
-    # 2. Total revenue sum
-    c.execute("SELECT COALESCE(SUM(total_paid), 0.0) FROM car_logs WHERE status = 'Completed'")
-    total_revenue = c.fetchone()[0]
-
-    # 3. All logs (prioritize completed first)
-    c.execute("SELECT * FROM car_logs ORDER BY CASE WHEN status = 'Completed' THEN 0 ELSE 1 END, id DESC LIMIT 25")
-    logs = c.fetchall()
-
->>>>>>> e79420c0f7b16ea5b81e1d58e5125a08264cf6e2
     c.execute("SELECT COUNT(*), COALESCE(SUM(fine_amount), 0) FROM penalty_logs")
     p_count, p_total = c.fetchone()
     
