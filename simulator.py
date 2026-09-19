@@ -153,3 +153,15 @@ def initialize_system():
                     print(f"[INIT SYNC] Bay '{s.get('name')}' is already occupied.")
 
     print("--- [INITIALIZATION COMPLETE] ---\n")
+
+def handle_carbon_monoxide_event(danger_level):
+    """Turns exhaust fans on/off based on the simulator's reported CO danger level."""
+    fans = config.exhaust_fans or ["fan0"]
+    if danger_level in ["Mid", "High", "Critical"]:
+        print(f"[CO ALERT] Danger level '{danger_level}'. Turning fans ON: {fans}")
+        for fan in fans:
+            call_simulator_api("POST", f"/exhaust-fans/{fan}/on")
+    elif danger_level == "Safe":
+        print(f"[CO SAFE] Danger level '{danger_level}'. Turning fans OFF: {fans}")
+        for fan in fans:
+            call_simulator_api("POST", f"/exhaust-fans/{fan}/off")

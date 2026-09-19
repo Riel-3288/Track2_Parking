@@ -167,13 +167,7 @@ def webhook_listener():
 
     # 4. Carbon Monoxide safety
     elif event_class == "carbon_monoxide_event":
-        danger = data.get("DangerLevel")
-        if danger in ["Mid", "High", "Critical"]:
-            for fan in config.exhaust_fans or ["fan0"]:
-                simulator.call_simulator_api("POST", f"/exhaust-fans/{fan}/on")
-        elif danger == "Safe":
-            for fan in config.exhaust_fans or ["fan0"]:
-                simulator.call_simulator_api("POST", f"/exhaust-fans/{fan}/off")
+        simulator.handle_carbon_monoxide_event(data.get("DangerLevel"))
 
     # 5. Log Penalties
     elif event_class == "penalty":
