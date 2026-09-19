@@ -242,13 +242,11 @@ def login():
         if action == "login":
             user = users.get(username)
             if user and user["password"] == password:
-                # Log the successful login attempt and fetch recent login history
                 history = database.get_recent_logins(username, 3)
                 database.log_login_attempt(username, True, ip, "login_success")
-
                 session["username"] = username
                 session["role"] = user["role"]
-                session["last_logins"] = history
+                session["last_logins"] = history 
 
                 if user["role"] == "admin":
                     return redirect(url_for("admin_dashboard"))
@@ -300,7 +298,7 @@ def operator_dashboard():
         "operator.html",
         username=session.get("username"),
         role=session.get("role"),
-        last_logins=session.get("last_logins", [])
+        last_logins=session.get("last_logins", [])  
     )
 
 @app.route("/admin", methods=["GET"])
