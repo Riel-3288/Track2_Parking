@@ -1,327 +1,15 @@
 import time
 import threading
-import hashlib
-import urllib.parse
 import sqlite3
 import re
-import requests
-from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for
-import json
-import os
+import config
+import auth
+import database
+import simulator
 
 app = Flask(__name__)
-# secret_key
 app.secret_key = "ctrl_alt_everything_super_secret_key" 
-
-USERS_FILE = "users.json"
-
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        default_users = {
-            "admin": {"password": "admin", "role": "admin"},
-            "operator": {"password": "operator", "role": "operator"}
-        }
-        save_users(default_users)
-        return default_users
-    
-    with open(USERS_FILE, 'r') as f:
-        return json.load(f)
-
-def save_users(users):
-    """将新用户保存到 JSON 文件"""
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=4)
-
-# ==============================================================================
-# CONFIGURATION & ABSOLUTE PATHS
-# ==============================================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_FILE = os.path.join(BASE_DIR, "parking.db")
-
-SIMULATOR_BASE_URL = "http://127.0.0.1:9898/api/v1"
-ADMIN_NAME = "admin"
-ADMIN_PASS = "admin"
-
-jwt_token = None
-auth_lock = threading.Lock()
-state_lock = threading.Lock()
-
-# State Tracking
-processed_event_ids = set()
-active_cars = {}          # { plate: { "spot": str, "type": str, "duration": int, "expected_cost": float, "charged": bool } }
-reserved_spots = set()    # Bays reserved by cars driving to them
-
-entry_gate_name = "gateA"
-exit_gate_name = "gateB"
-exhaust_fans = []
-
-# ==============================================================================
-# USER AUTHENTICATION & ROLES
-# ==============================================================================
-SYSTEM_USERS = {
-    "admin": {"password": "admin", "role": "admin"},
-    "operator": {"password": "operator", "role": "operator"}
-}
-
-def login_required(f):
-    """装饰器：检查用户是否已登录"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if "username" not in session:
-            return redirect(url_for("login"))
-        return f(*args, **kwargs)
-    return decorated_function
-
-def admin_required(f):
-    """装饰器：检查用户是否为 Admin"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if "username" not in session or session.get("role") != "admin":
-            return "Access Denied: Admins Only", 403
-        return f(*args, **kwargs)
-    return decorated_function
-
-
-# ==============================================================================
-# DATABASE SETUP (SQLite)
-# ==============================================================================
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS car_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        plate TEXT, car_type TEXT, spot_name TEXT,
-        entry_time TEXT, exit_time TEXT,
-        parking_cost REAL, charging_cost REAL, total_paid REAL, status TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS penalty_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        reason TEXT, fine_amount REAL, timestamp TEXT
-    )''')
-    conn.commit()
-    conn.close()
-
-def log_car_entry(plate, car_type, spot):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''INSERT INTO car_logs (plate, car_type, spot_name, entry_time, status)
-                 VALUES (?, ?, ?, datetime('now', 'localtime'), 'Parked')''',
-              (plate.strip(), car_type, spot))
-    conn.commit()
-    conn.close()
-
-def log_car_exit(plate, p_cost, c_cost, total):
-    """Updates database with exit timestamp, calculated fees, and marks Completed."""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    clean_plate = plate.strip()
-
-    c.execute('''SELECT id FROM car_logs 
-                 WHERE TRIM(UPPER(plate)) = TRIM(UPPER(?)) 
-                 ORDER BY id DESC LIMIT 1''', (clean_plate,))
-    row = c.fetchone()
-
-    if row:
-        c.execute('''UPDATE car_logs 
-                     SET exit_time = datetime('now', 'localtime'),
-                         parking_cost = ?, charging_cost = ?, total_paid = ?, status = 'Completed'
-                     WHERE id = ?''',
-                  (p_cost, c_cost, total, row[0]))
-    else:
-        c.execute('''INSERT INTO car_logs (plate, car_type, spot_name, entry_time, exit_time, parking_cost, charging_cost, total_paid, status)
-                     VALUES (?, 'Normal', 'Exit', datetime('now', '-2 minutes', 'localtime'), datetime('now', 'localtime'), ?, ?, ?, 'Completed')''',
-                  (clean_plate, p_cost, c_cost, total))
-
-    conn.commit()
-    conn.close()
-    print(f"[DB LOGGED] Exit time & fee saved for '{clean_plate}': ${total:.2f} (Status: Completed)")
-
-def log_penalty(reason, fine):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''INSERT INTO penalty_logs (reason, fine_amount, timestamp)
-                 VALUES (?, ?, datetime('now', 'localtime'))''',
-              (reason, fine))
-    conn.commit()
-    conn.close()
-
-# ==============================================================================
-# SAFE SPOT OCCUPANCY CHECK
-# ==============================================================================
-def is_spot_empty(spot):
-    detected = spot.get("detectedCars")
-    if detected is None: return True
-    if isinstance(detected, int): return detected == 0
-    if isinstance(detected, (list, tuple)): return len(detected) == 0
-    return False
-
-
-# ==============================================================================
-# SIMULATOR API CLIENT (JWT AUTHENTICATED)
-# ==============================================================================
-def login_to_simulator():
-    """Logs in using credentials and caches Bearer JWT token."""
-    global jwt_token
-    with auth_lock:
-        url = f"{SIMULATOR_BASE_URL}/auth/login"
-        payload = {"Email": ADMIN_NAME, "Password": ADMIN_PASS}
-        try:
-            res = requests.post(url, json=payload, timeout=5)
-            if res.status_code == 200:
-                jwt_token = res.json().get("token")
-                print(f"[AUTH] Successfully acquired JWT token.")
-                return True
-            print(f"[AUTH FAILED] Status {res.status_code}: {res.text}")
-        except Exception as e:
-            print(f"[AUTH ERROR] Cannot connect to simulator on port 9898: {e}")
-        return False
-
-
-def call_simulator_api(method, endpoint, payload=None, params=None):
-    """Sends authenticated HTTP requests to the simulator."""
-    global jwt_token
-    if not jwt_token and not login_to_simulator():
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {jwt_token}",
-        "Content-Type": "application/json"
-    }
-    url = f"{SIMULATOR_BASE_URL}{endpoint}"
-
-    try:
-        if method.upper() == "GET":
-            res = requests.get(url, headers=headers, params=params, timeout=5)
-        else:
-            res = requests.post(url, headers=headers, json=payload or {}, params=params, timeout=5)
-
-        if res.status_code == 401:
-            print("[AUTH] Token expired. Re-authenticating...")
-            if login_to_simulator():
-                headers["Authorization"] = f"Bearer {jwt_token}"
-                res = requests.request(method, url, headers=headers, json=payload, params=params, timeout=5)
-
-        return res.json() if res.content and res.status_code in [200, 201] else {}
-    except Exception as e:
-        print(f"[API ERROR] Request failed for {endpoint}: {e}")
-        return None
-
-
-# ==============================================================================
-# SMART SELF-REPAIRING GATE CONTROLLER
-# ==============================================================================
-def safe_open_gate(gate_name):
-    barriers = call_simulator_api("GET", "/list-barriers")
-    if isinstance(barriers, list):
-        for b in barriers:
-            if b.get("name") == gate_name and b.get("broken", False):
-                print(f"[MAINTENANCE] Gate '{gate_name}' worn out! Auto-repairing...")
-                call_simulator_api("POST", f"/barrier-gates/{gate_name}/repair")
-                time.sleep(1.2)
-                break
-    print(f"[GATE] Lifting barrier '{gate_name}'...")
-    call_simulator_api("POST", f"/barrier-gates/{gate_name}/open")
-
-
-def safe_close_gate(gate_name):
-    print(f"[GATE] Lowering barrier '{gate_name}'...")
-    call_simulator_api("POST", f"/barrier-gates/{gate_name}/close")
-
-
-def delayed_close_gate(gate_name, delay_seconds=3.0):
-    def _close():
-        time.sleep(delay_seconds)
-        safe_close_gate(gate_name)
-    threading.Thread(target=_close, daemon=True).start()
-
-
-
-# ==============================================================================
-# STRICT LIVE SPOT ALLOCATION & IN-TRANSIT RESERVATION LOCK
-# ==============================================================================
-def allocate_parking_spot(car_type):
-    spots = call_simulator_api("GET", "/list-parking-spots")
-    if not isinstance(spots, list): return None
-
-    with state_lock:
-        usable_spots = [
-            s for s in spots
-            if s.get("purpose") == "Park"
-            and not s.get("broken")
-            and not s.get("isUnderMaintenance")
-            and is_spot_empty(s)
-            and s.get("name") not in reserved_spots
-        ]
-
-        c_type = (car_type or "Normal").strip().capitalize()
-        chosen_spot = None
-
-        if c_type == "Electric":
-            for s in usable_spots:
-                if s.get("parkingForCarType", "").lower() == "electric":
-                    chosen_spot = s.get("name")
-                    break
-            if not chosen_spot:
-                for s in usable_spots:
-                    if s.get("parkingForCarType", "").lower() == "any":
-                        chosen_spot = s.get("name")
-                        break
-        elif c_type in ["Accessible", "Disabled", "Handicapped"]:
-            for s in usable_spots:
-                if s.get("parkingForCarType", "").lower() == "accessible":
-                    chosen_spot = s.get("name")
-                    break
-        else:
-            for s in usable_spots:
-                if s.get("parkingForCarType", "").lower() == "any":
-                    chosen_spot = s.get("name")
-                    break
-
-        if chosen_spot:
-            reserved_spots.add(chosen_spot)
-            print(f"[RESERVATION] Bay '{chosen_spot}' reserved for incoming {c_type} car.")
-            return chosen_spot
-
-    print(f"[ALLOCATION WARNING] No matching bay available for car type '{c_type}'!")
-    return None
-
-
-# ==============================================================================
-# STARTUP HARDWARE SYNC & UNJAM ROUTINE
-# ==============================================================================
-def initialize_system():
-    time.sleep(2)
-    print("\n--- [SYSTEM STARTUP: LIVE HARDWARE SYNC] ---")
-    if not login_to_simulator(): return
-
-    call_simulator_api("GET", "/test")
-
-    global exhaust_fans
-    fans = call_simulator_api("GET", "/list-exhaust-fans")
-    if isinstance(fans, list):
-        exhaust_fans = [f.get("name") for f in fans if "name" in f]
-
-    # Repair broken gates on startup
-    barriers = call_simulator_api("GET", "/list-barriers")
-    if isinstance(barriers, list):
-        for b in barriers:
-            if b.get("broken", False):
-                call_simulator_api("POST", f"/barrier-gates/{b.get('name')}/repair")
-
-    # Ensure exit gate is closed by default
-    safe_close_gate(exit_gate_name)
-
-    # Sync already parked cars into reserved_spots
-    spots = call_simulator_api("GET", "/list-parking-spots")
-    if isinstance(spots, list):
-        with state_lock:
-            for s in spots:
-                if s.get("purpose") == "Park" and not is_spot_empty(s):
-                    reserved_spots.add(s.get("name"))
-                    print(f"[INIT SYNC] Bay '{s.get('name')}' is already occupied.")
-
-    print("--- [INITIALIZATION COMPLETE] ---\n")
 
 # ==============================================================================
 # WEBHOOK EVENT HANDLER
@@ -336,9 +24,9 @@ def webhook_listener():
     event_class = data.get("EventClass")
 
     if event_id:
-        if event_id in processed_event_ids:
+        if event_id in config.processed_event_ids:
             return jsonify({"status": "duplicate"}), 200
-        processed_event_ids.add(event_id)
+        config.processed_event_ids.add(event_id)
 
     # 1. Car movement events
     if event_class == "car_spot_action":
@@ -357,23 +45,23 @@ def webhook_listener():
 
         # A. Entrance Arrival -> Record planned duration & Dispatch
         if spot_type == "EntrySpot" and direction == "CarIn":
-            target_spot = allocate_parking_spot(car_type)
+            target_spot = simulator.allocate_parking_spot(car_type)
             if target_spot:
-                active_cars[raw_plate] = {
+                config.active_cars[raw_plate] = {
                     "spot": target_spot,
                     "type": car_type,
                     "duration": max(1, planned_duration),
                     "charged": False
                 }
-                log_car_entry(raw_plate, car_type, target_spot)
+                database.log_car_entry(raw_plate, car_type, target_spot)
                 print(f"\n[ENTRY] Admitting '{raw_plate}' ({car_type}) -> Bay '{target_spot}' (Planned: {planned_duration} mins)")
 
-                safe_open_gate(entry_gate_name)
+                simulator.safe_open_gate(config.entry_gate_name)
 
                 def _dispatch_entry(plate, spot):
                     time.sleep(1.5)
                     print(f"[DISPATCH] Arm raised. Directing '{plate}' into '{spot}'...")
-                    call_simulator_api("POST", f"/car/{plate}/goto/{spot}")
+                    simulator.call_simulator_api("POST", f"/car/{plate}/goto/{spot}")
 
                 threading.Thread(target=_dispatch_entry, args=(nospace_plate, target_spot), daemon=True).start()
             else:
@@ -381,29 +69,27 @@ def webhook_listener():
 
         # B. Cleared entry box -> Delay close of gateA by 3s
         elif spot_type == "EntrySpot" and direction == "CarOut":
-            delayed_close_gate(entry_gate_name, delay_seconds=3.0)
+            simulator.delayed_close_gate(config.entry_gate_name, delay_seconds=3.0)
 
         # C1. Car physically enters parking bay -> Capture exact planned stay if updated!
         elif spot_type == "Park" and direction == "CarIn":
             if planned_duration > 0:
-                car_info = active_cars.setdefault(raw_plate, {})
+                car_info = config.active_cars.setdefault(raw_plate, {})
                 car_info["duration"] = planned_duration
                 print(f"[PARK DOCKED] '{raw_plate}' parked in '{spot_name}'. Simulator stay duration: {planned_duration} mins.")
 
         # C2. Finished parking & leaves bay -> Direct to EXIT & release reservation
         elif spot_type == "Park" and direction == "CarOut":
-            with state_lock:
-                reserved_spots.discard(spot_name)
+            with config.state_lock:
+                config.reserved_spots.discard(spot_name)
             print(f"\n[PARK FINISHED] '{raw_plate}' left bay '{spot_name}'. Directing to EXIT...")
-            call_simulator_api("POST", f"/car/{nospace_plate}/goto/exit")
+            simulator.call_simulator_api("POST", f"/car/{nospace_plate}/goto/exit")
 
         # D. Arrived at Exit Box -> Calculate Fee from Simulator's Exact Planned Stay
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarIn":
-            safe_close_gate(exit_gate_name)
+            simulator.safe_close_gate(config.exit_gate_name)
 
-            car_info = active_cars.get(raw_plate, {})
-            
-            # Use simulator's internal duration to eliminate Penalty_CarChargedIncorrectParkingAmount
+            car_info = config.active_cars.get(raw_plate, {})
             duration = max(1, int(car_info.get("duration", 1)))
             is_electric = (car_info.get("type") == "Electric")
 
@@ -416,7 +102,7 @@ def webhook_listener():
             car_info["expected_cost"] = total_fee
 
             # Record exit time and fee in database
-            log_car_exit(raw_plate, parking_cost, charging_cost, total_fee)
+            database.log_car_exit(raw_plate, parking_cost, charging_cost, total_fee)
 
             if not car_info.get("charged"):
                 car_info["charged"] = True
@@ -426,22 +112,21 @@ def webhook_listener():
                     time.sleep(1.5)  # Wait for car to come to a complete halt
                     print(f"[CHARGE] Requesting payment from '{plate}' (P={p_cost}, C={c_cost})...")
                     charge_params = {"parkingCost": p_cost, "chargingCost": c_cost}
-                    # Send with clean plate (no spaces) to avoid URL %20 errors in simulator
-                    call_simulator_api("POST", f"/car/{plate}/charge", payload=charge_params, params=charge_params)
+                    simulator.call_simulator_api("POST", f"/car/{plate}/charge", payload=charge_params, params=charge_params)
 
                 threading.Thread(target=_charge_after_stop, args=(nospace_plate, parking_cost, charging_cost), daemon=True).start()
 
         # E. Cleared Exit Barrier -> Lower gateB immediately
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarOut":
-            print(f"[EXIT COMPLETE] Car '{raw_plate}' departed. Lowering '{exit_gate_name}'...")
-            safe_close_gate(exit_gate_name)
-            active_cars.pop(raw_plate, None)
+            print(f"[EXIT COMPLETE] Car '{raw_plate}' departed. Lowering '{config.exit_gate_name}'...")
+            simulator.safe_close_gate(config.exit_gate_name)
+            config.active_cars.pop(raw_plate, None)
 
     # 2. Payment confirmed -> Lift gateB, wait 1.5s, dispatch to leavepark, auto-close!
     elif event_class == "payment_made":
         car_plate = data.get("CarPlateNumber", "").strip()
         nospace_plate = car_plate.replace(" ", "")
-        car_info = active_cars.get(car_plate, {})
+        car_info = config.active_cars.get(car_plate, {})
 
         raw_amount = data.get("Amount") or data.get("amount")
         amount = float(raw_amount) if raw_amount is not None else float(car_info.get("expected_cost", 1.0))
@@ -452,17 +137,17 @@ def webhook_listener():
         c_cost = float(car_info.get("charging_cost", 0.0))
 
         # Update database with exact paid amount
-        log_car_exit(car_plate, p_cost, c_cost, amount)
+        database.log_car_exit(car_plate, p_cost, c_cost, amount)
 
-        print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{exit_gate_name}'...")
-        safe_open_gate(exit_gate_name)
+        print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{config.exit_gate_name}'...")
+        simulator.safe_open_gate(config.exit_gate_name)
 
         def _dispatch_exit(plate):
             time.sleep(1.5)  # Wait for gateB arm to physically rise
             print(f"[EXIT DISPATCH] Arm raised. Releasing '{plate}' from park...")
-            call_simulator_api("POST", f"/car/{plate}/goto/leavepark")
+            simulator.call_simulator_api("POST", f"/car/{plate}/goto/leavepark")
             time.sleep(4.0)
-            safe_close_gate(exit_gate_name)
+            simulator.safe_close_gate(config.exit_gate_name)
 
         threading.Thread(target=_dispatch_exit, args=(nospace_plate,), daemon=True).start()
 
@@ -471,30 +156,30 @@ def webhook_listener():
         c_type = data.get("Type")
         c_name = data.get("Name")
         if c_type == "BarrierGate":
-            call_simulator_api("POST", f"/barrier-gates/{c_name}/repair")
+            simulator.call_simulator_api("POST", f"/barrier-gates/{c_name}/repair")
         elif c_type in ["Parking", "ParkingSpot"]:
-            spots = call_simulator_api("GET", "/list-parking-spots") or []
-            is_empty = any(s.get("name") == c_name and is_spot_empty(s) for s in spots)
+            spots = simulator.call_simulator_api("GET", "/list-parking-spots") or []
+            is_empty = any(s.get("name") == c_name and simulator.is_spot_empty(s) for s in spots)
             if is_empty:
-                call_simulator_api("POST", f"/parking-spots/{c_name}/repair")
+                simulator.call_simulator_api("POST", f"/parking-spots/{c_name}/repair")
         elif c_type == "ExhaustFan":
-            call_simulator_api("POST", f"/exhaust-fans/{c_name}/repair")
+            simulator.call_simulator_api("POST", f"/exhaust-fans/{c_name}/repair")
 
     # 4. Carbon Monoxide safety
     elif event_class == "carbon_monoxide_event":
         danger = data.get("DangerLevel")
         if danger in ["Mid", "High", "Critical"]:
-            for fan in exhaust_fans or ["fan0"]:
-                call_simulator_api("POST", f"/exhaust-fans/{fan}/on")
+            for fan in config.exhaust_fans or ["fan0"]:
+                simulator.call_simulator_api("POST", f"/exhaust-fans/{fan}/on")
         elif danger == "Safe":
-            for fan in exhaust_fans or ["fan0"]:
-                call_simulator_api("POST", f"/exhaust-fans/{fan}/off")
+            for fan in config.exhaust_fans or ["fan0"]:
+                simulator.call_simulator_api("POST", f"/exhaust-fans/{fan}/off")
 
     # 5. Log Penalties
     elif event_class == "penalty":
         reason = data.get("Reason", "Unknown")
         fine = float(data.get("FineAmount", 0.0))
-        log_penalty(reason, fine)
+        database.log_penalty(reason, fine)
         print(f"\n🚨 [PENALTY INCURRED] {reason} | -{fine} credits 🚨\n")
 
     return jsonify({"status": "ok"}), 200
@@ -503,7 +188,6 @@ def webhook_listener():
 # ==============================================================================
 # WEB DASHBOARD ROUTES (HTML RENDERING & AUTH)
 # ==============================================================================
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -512,7 +196,7 @@ def login():
         username = request.form.get("username").strip()
         password = request.form.get("password")
         
-        users = load_users()
+        users = auth.load_users()
         
         if action == "login":
             user = users.get(username)
@@ -534,11 +218,9 @@ def login():
             elif not username or not password:
                 error = "Username and Password cannot be empty."
             else:
-
                 users[username] = {"password": password, "role": role}
-                save_users(users)
+                auth.save_users(users)
                 
-
                 session["username"] = username
                 session["role"] = role
                 if role == "admin":
@@ -554,34 +236,31 @@ def logout():
     return redirect(url_for("login"))
 
 @app.route("/", methods=["GET"])
-@login_required
+@auth.login_required
 def root():
     if session.get("role") == "admin":
         return redirect(url_for("admin_dashboard"))
     return redirect(url_for("operator_dashboard"))
 
 @app.route("/operator", methods=["GET"])
-@login_required
+@auth.login_required
 def operator_dashboard():
-    # Render the old DASHBOARD_HTML which you put into templates/operator.html
     return render_template("operator.html", username=session.get("username"))
 
 @app.route("/admin", methods=["GET"])
-@admin_required
+@auth.admin_required
 def admin_dashboard():
-    # Render the new templates/admin.html
     return render_template("admin.html", username=session.get("username"))
 
 
 # ==============================================================================
 # API ENDPOINTS FOR DASHBOARD (PROTECTED)
 # ==============================================================================
-
 @app.route("/api/dashboard/status", methods=["GET"])
-@login_required
+@auth.login_required
 def dashboard_status():
-    spots = call_simulator_api("GET", "/list-parking-spots") or []
-    barriers = call_simulator_api("GET", "/list-barriers") or []
+    spots = simulator.call_simulator_api("GET", "/list-parking-spots") or []
+    barriers = simulator.call_simulator_api("GET", "/list-barriers") or []
 
     gate_a = "Unknown"
     gate_b = "Unknown"
@@ -589,16 +268,16 @@ def dashboard_status():
         if b.get("name") == "gateA": gate_a = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
         elif b.get("name") == "gateB": gate_b = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
 
-    with state_lock:
-        free_spots = sum(1 for s in spots if s.get("purpose") == "Park" and is_spot_empty(s) and not s.get("broken") and s.get("name") not in reserved_spots)
-        curr_reserved = list(reserved_spots)
+    with config.state_lock:
+        free_spots = sum(1 for s in spots if s.get("purpose") == "Park" and simulator.is_spot_empty(s) and not s.get("broken") and s.get("name") not in config.reserved_spots)
+        curr_reserved = list(config.reserved_spots)
 
     valid_spots = [s for s in spots if s.get("purpose") == "Park"]
     def natural_sort_key(s):
         return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s.get("name", ""))]
     valid_spots.sort(key=natural_sort_key)
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(config.DB_FILE)
     c = conn.cursor()
     
     c.execute('''
@@ -628,17 +307,17 @@ def dashboard_status():
     })
 
 @app.route("/api/operator/gate/<name>/<action>", methods=["POST"])
-@login_required
+@auth.login_required
 def operator_gate(name, action):
-    if action == "repair": call_simulator_api("POST", f"/barrier-gates/{name}/repair")
-    elif action == "open": safe_open_gate(name)
-    elif action == "close": safe_close_gate(name)
+    if action == "repair": simulator.call_simulator_api("POST", f"/barrier-gates/{name}/repair")
+    elif action == "open": simulator.safe_open_gate(name)
+    elif action == "close": simulator.safe_close_gate(name)
     return jsonify({"status": "ok"})
 
 @app.route("/api/operator/penalties/reset", methods=["POST"])
-@login_required
+@auth.login_required
 def operator_reset_penalties():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(config.DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM penalty_logs")
     conn.commit()
@@ -650,8 +329,8 @@ def operator_reset_penalties():
 # MAIN ENTRYPOINT
 # ==============================================================================
 if __name__ == "__main__":
-    init_db()
-    threading.Thread(target=initialize_system, daemon=True).start()
+    database.init_db()
+    threading.Thread(target=simulator.initialize_system, daemon=True).start()
 
     print("=" * 65)
     print("  CAR PARK MANAGEMENT SYSTEM (CTRL ALT EVERYTHING)")
