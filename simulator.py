@@ -136,6 +136,7 @@ def initialize_system():
     # Repair broken gates on startup
     barriers = call_simulator_api("GET", "/list-barriers")
     if isinstance(barriers, list):
+        config.barriers = [b.get("name") for b in barriers if b.get("name")]
         for b in barriers:
             if b.get("broken", False):
                 call_simulator_api("POST", f"/barrier-gates/{b.get('name')}/repair")

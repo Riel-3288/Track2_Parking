@@ -15,17 +15,6 @@ app.secret_key = "ctrl_alt_everything_super_secret_key"
 # WEBHOOK EVENT HANDLER
 # ==============================================================================
 def get_gate_for_spot(spot_name, is_entry=True):
-    """通过 SpotName 里的数字推断真实的 Gate 名字 (如 Entry2 -> gate2)"""
-    import re
-    if not spot_name:
-        return config.entry_gate_name if is_entry else config.exit_gate_name
-        
-    match = re.search(r'\d+', spot_name)
-    if match:
-        num = match.group()
-        for b in config.barriers:
-            if num in b:
-                return b
     return config.entry_gate_name if is_entry else config.exit_gate_name
 
 @app.route("/webhook", methods=["GET", "POST"])

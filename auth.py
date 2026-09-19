@@ -15,7 +15,7 @@ ROLE_PERMISSIONS = {
         "can_reset_penalties"
     ],
     "operator": [
-        "can_control_gate"  # Operator 只能开关门，不能修门，也不能看财报
+        "can_control_gate"  # Operator can only control gates, but cannot repair or reset penalties
     ]
 }
 

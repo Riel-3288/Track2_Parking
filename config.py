@@ -25,4 +25,5 @@ reserved_spots = set()    # Bays reserved by cars driving to them
 
 entry_gate_name = "gate1"
 exit_gate_name = "gate2"
+barriers = []
 exhaust_fans = []
