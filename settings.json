@@ -1,0 +1,13 @@
+{
+  "TeamName": "Ctrl Alt Everything",
+  "ListenAddress": "http://0.0.0.0:9898",
+  "WebhookUrl": "http://127.0.0.1:5000/webhook",
+  "ParkingSpeedMuliplier": 1,
+  "MinParkingTime": 1,
+  "MaxParkingTime": 5,
+  "Name": "admin",
+  "Password": "admin",
+  "GameSpeedMultiplier": 1.0,
+  "lvl2Password": "",
+  "lvl3Password": ""
+}
