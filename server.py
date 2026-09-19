@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 import hashlib
@@ -9,12 +10,14 @@ import requests
 app = Flask(__name__)
 
 # ==============================================================================
-# CONFIGURATION
+# CONFIGURATION & ABSOLUTE PATHS
 # ==============================================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, "parking.db")
+
 SIMULATOR_BASE_URL = "http://127.0.0.1:9898/api/v1"
 ADMIN_NAME = "admin"
 ADMIN_PASS = "admin"
-DB_FILE = "parking.db"
 
 jwt_token = None
 auth_lock = threading.Lock()
@@ -46,15 +49,11 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         reason TEXT, fine_amount REAL, timestamp TEXT
     )''')
-    # Clean up past unclosed rows so dashboard looks clean immediately
-    c.execute('''UPDATE car_logs 
-                 SET exit_time = datetime('now', 'localtime'),
-                     parking_cost = 1.0, charging_cost = 0.0, total_paid = 1.0, status = 'Completed'
-                 WHERE exit_time IS NULL AND status = 'Completed' ''')
     conn.commit()
     conn.close()
 
 def log_car_entry(plate, car_type, spot):
+    """Logs when a car arrives and parks."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''INSERT INTO car_logs (plate, car_type, spot_name, entry_time, status)
@@ -64,21 +63,35 @@ def log_car_entry(plate, car_type, spot):
     conn.close()
 
 def log_car_exit(plate, p_cost, c_cost, total):
-    """Updates database with exit timestamp, calculated fees, and marks Completed."""
+    """
+    Updates the car with exit timestamp and fee.
+    If the car had no entry record (parked before boot), it automatically inserts it!
+    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('''UPDATE car_logs 
-                 SET exit_time = datetime('now', 'localtime'),
-                     parking_cost = ?, charging_cost = ?, total_paid = ?, status = 'Completed'
-                 WHERE id = (
-                     SELECT id FROM car_logs 
-                     WHERE TRIM(UPPER(plate)) = TRIM(UPPER(?)) 
-                     ORDER BY id DESC LIMIT 1
-                 )''',
-              (p_cost, c_cost, total, plate.strip()))
+    clean_plate = plate.strip()
+
+    # Find if this car already has an entry row
+    c.execute('''SELECT id FROM car_logs 
+                 WHERE TRIM(UPPER(plate)) = TRIM(UPPER(?)) 
+                 ORDER BY id DESC LIMIT 1''', (clean_plate,))
+    row = c.fetchone()
+
+    if row:
+        c.execute('''UPDATE car_logs 
+                     SET exit_time = datetime('now', 'localtime'),
+                         parking_cost = ?, charging_cost = ?, total_paid = ?, status = 'Completed'
+                     WHERE id = ?''',
+                  (p_cost, c_cost, total, row[0]))
+    else:
+        # Car was already parked before script started -> Insert as Completed directly!
+        c.execute('''INSERT INTO car_logs (plate, car_type, spot_name, entry_time, exit_time, parking_cost, charging_cost, total_paid, status)
+                     VALUES (?, 'Normal', 'Exit', datetime('now', '-2 minutes', 'localtime'), datetime('now', 'localtime'), ?, ?, ?, 'Completed')''',
+                  (clean_plate, p_cost, c_cost, total))
+
     conn.commit()
     conn.close()
-    print(f"[DB LOGGED] Exit time & fee saved for '{plate}': ${total:.2f}")
+    print(f"[DB LOGGED] Exit time & fee saved for '{clean_plate}': ${total:.2f} (Status: Completed)")
 
 def log_penalty(reason, fine):
     conn = sqlite3.connect(DB_FILE)
@@ -91,7 +104,7 @@ def log_penalty(reason, fine):
 
 
 # ==============================================================================
-# SAFE SPOT OCCUPANCY CHECK (Handles int 0/1 and list [])
+# SAFE SPOT OCCUPANCY CHECK
 # ==============================================================================
 def is_spot_empty(spot):
     detected = spot.get("detectedCars")
@@ -105,7 +118,6 @@ def is_spot_empty(spot):
 # SIMULATOR API CLIENT (JWT AUTHENTICATED)
 # ==============================================================================
 def login_to_simulator():
-    """Logs in using credentials and caches Bearer JWT token."""
     global jwt_token
     with auth_lock:
         url = f"{SIMULATOR_BASE_URL}/auth/login"
@@ -123,7 +135,6 @@ def login_to_simulator():
 
 
 def call_simulator_api(method, endpoint, payload=None, params=None):
-    """Sends authenticated HTTP requests to the simulator."""
     global jwt_token
     if not jwt_token and not login_to_simulator():
         return None
@@ -141,7 +152,6 @@ def call_simulator_api(method, endpoint, payload=None, params=None):
             res = requests.post(url, headers=headers, json=payload or {}, params=params, timeout=5)
 
         if res.status_code == 401:
-            print("[AUTH] Token expired. Re-authenticating...")
             if login_to_simulator():
                 headers["Authorization"] = f"Bearer {jwt_token}"
                 res = requests.request(method, url, headers=headers, json=payload, params=params, timeout=5)
@@ -153,10 +163,9 @@ def call_simulator_api(method, endpoint, payload=None, params=None):
 
 
 # ==============================================================================
-# SMART SELF-REPAIRING GATE CONTROLLER (WITH TIMED DELAYS)
+# SMART SELF-REPAIRING GATE CONTROLLER
 # ==============================================================================
 def safe_open_gate(gate_name):
-    """Inspects gate health before opening. Auto-repairs if worn out."""
     barriers = call_simulator_api("GET", "/list-barriers")
     if isinstance(barriers, list):
         for b in barriers:
@@ -170,13 +179,11 @@ def safe_open_gate(gate_name):
 
 
 def safe_close_gate(gate_name):
-    """Ensures gate closes cleanly."""
     print(f"[GATE] Lowering barrier '{gate_name}'...")
     call_simulator_api("POST", f"/barrier-gates/{gate_name}/close")
 
 
 def delayed_close_gate(gate_name, delay_seconds=3.0):
-    """Waits for car to completely drive past the arm before lowering it."""
     def _close():
         time.sleep(delay_seconds)
         safe_close_gate(gate_name)
@@ -246,7 +253,7 @@ def allocate_parking_spot(car_type):
 
 
 # ==============================================================================
-# STARTUP HARDWARE SYNC & UNJAM ROUTINE
+# STARTUP HARDWARE SYNC
 # ==============================================================================
 def initialize_system():
     time.sleep(2)
@@ -267,32 +274,16 @@ def initialize_system():
             if b.get("broken", False):
                 call_simulator_api("POST", f"/barrier-gates/{b.get('name')}/repair")
 
-    # Ensure exit gate is closed by default
+    # Ensure gateB is closed by default
     safe_close_gate(exit_gate_name)
 
-    # Sync already parked cars into reserved_spots
+    # Sync already parked cars
     spots = call_simulator_api("GET", "/list-parking-spots")
     if isinstance(spots, list):
         with state_lock:
             for s in spots:
                 if s.get("purpose") == "Park" and not is_spot_empty(s):
                     reserved_spots.add(s.get("name"))
-                    print(f"[INIT SYNC] Bay '{s.get('name')}' is already occupied.")
-
-    # RESCUE: Check if cars are waiting at Entrance or Exit on boot
-    if isinstance(spots, list):
-        for s in spots:
-            purpose = s.get("purpose")
-            detected = s.get("detectedCars")
-            has_car = (isinstance(detected, int) and detected > 0) or (isinstance(detected, list) and len(detected) > 0)
-            if purpose == "EntrySpot" and has_car:
-                print("[INIT RESCUE] Car detected at entrance! Lifting gateA...")
-                safe_open_gate(entry_gate_name)
-            elif purpose == "ExitSpot" and has_car:
-                print("[INIT RESCUE] Car detected at exit! Lifting gateB and releasing...")
-                safe_open_gate(exit_gate_name)
-                time.sleep(1.5)
-                call_simulator_api("POST", "/car/WCT%20759/goto/leavepark")
 
     print("--- [INITIALIZATION COMPLETE] ---\n")
 
@@ -328,7 +319,7 @@ def webhook_listener():
 
         safe_plate = urllib.parse.quote(car_plate)
 
-        # A. Entrance Arrival -> Lift gateA, wait 1.5s for arm to rise, then dispatch
+        # Entrance Arrival -> Lift gateA, wait 1.5s, then dispatch
         if spot_type == "EntrySpot" and direction == "CarIn":
             target_spot = allocate_parking_spot(car_type)
             if target_spot:
@@ -352,19 +343,18 @@ def webhook_listener():
             else:
                 print(f"[ENTRY REJECT] Lot full for '{car_plate}'!")
 
-        # B. Cleared entry box -> Delay close of gateA by 3.0s
+        # Cleared entry box -> Delay close gateA by 3s
         elif spot_type == "EntrySpot" and direction == "CarOut":
-            print(f"[GATE] Car cleared entry box. Delaying close of '{entry_gate_name}' by 3s...")
             delayed_close_gate(entry_gate_name, delay_seconds=3.0)
 
-        # C. Finished parking & leaves bay -> Direct to EXIT
+        # Finished parking -> Direct to EXIT & release reservation
         elif spot_type == "Park" and direction == "CarOut":
             with state_lock:
                 reserved_spots.discard(spot_name)
             print(f"\n[PARK FINISHED] '{car_plate}' left bay '{spot_name}'. Directing to EXIT...")
             call_simulator_api("POST", f"/car/{safe_plate}/goto/exit")
 
-        # D. Arrived at Exit Box -> Wait 1.5s for full stop -> LOG TO DB & CHARGE!
+        # Arrived at Exit Box -> Calculate Fee, LOG EXIT IMMEDIATELY, and Charge!
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarIn":
             safe_close_gate(exit_gate_name)
 
@@ -377,22 +367,21 @@ def webhook_listener():
             total_fee = parking_cost + charging_cost
             car_info["expected_cost"] = total_fee
 
-            # LOG EXIT TIME & FEE TO DATABASE IMMEDIATELY
+            # GUARANTEED DATABASE RECORD: Logs Exit Time and Total Fee right now!
             log_car_exit(car_plate, parking_cost, charging_cost, total_fee)
 
             if not car_info.get("charged"):
                 car_info["charged"] = True
-                print(f"[EXIT] Waiting 1.5s for '{car_plate}' to come to a full physical stop before charging...")
 
                 def _charge_after_stop(plate, p_cost, c_cost):
-                    time.sleep(1.5)
+                    time.sleep(1.5)  # Let car stop completely before charging
                     print(f"[CHARGE] Car stopped. Requesting payment from '{plate}' (P={p_cost}, C={c_cost})...")
                     charge_params = {"parkingCost": p_cost, "chargingCost": c_cost}
                     call_simulator_api("POST", f"/car/{plate}/charge", params=charge_params)
 
                 threading.Thread(target=_charge_after_stop, args=(safe_plate, parking_cost, charging_cost), daemon=True).start()
 
-        # E. Cleared Exit Barrier -> Lower gateB immediately
+        # Cleared Exit Barrier -> Lower gateB immediately & cleanup
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarOut":
             print(f"[EXIT COMPLETE] Car '{car_plate}' departed. Lowering '{exit_gate_name}'...")
             safe_close_gate(exit_gate_name)
@@ -407,7 +396,6 @@ def webhook_listener():
 
         p_cost = car_info.get("duration", 1.0)
         c_cost = car_info.get("expected_cost", 1.0) - p_cost
-        # Update database with exact paid amount if different
         log_car_exit(car_plate, p_cost, c_cost, amount)
 
         print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{exit_gate_name}'...")
@@ -491,7 +479,7 @@ DASHBOARD_HTML = """
 <body>
     <div class="header">
         <h1>🅿️ Ctrl Alt Everything — Command Center</h1>
-        <div><strong>Operator Mode:</strong> Active</div>
+        <div><strong>Database Path:</strong> SQLite Active</div>
     </div>
 
     <div class="stats-grid">
@@ -514,7 +502,7 @@ DASHBOARD_HTML = """
     <h2>Live Parking Bays (Zone 1)</h2>
     <div class="bays-grid" id="bays-container"></div>
 
-    <h2>Recent Activity (Database)</h2>
+    <h2>Recent Car Activity Log (Database - Last 25)</h2>
     <table>
         <thead>
             <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Total Fee</th><th>Status</th></tr>
@@ -555,13 +543,14 @@ DASHBOARD_HTML = """
             data.logs.forEach(l => {
                 const tr = document.createElement('tr');
                 const feeFormatted = l[8] != null ? `$${Number(l[8]).toFixed(2)}` : '$0.00';
+                const isCompleted = l[9] === 'Completed' || (l[5] && l[5] !== '--');
                 tr.innerHTML = `<td><strong>${l[1]}</strong></td>
                                 <td>${l[2]}</td>
                                 <td>${l[3]}</td>
                                 <td>${l[4] || '--'}</td>
                                 <td>${l[5] || '--'}</td>
-                                <td>${feeFormatted}</td>
-                                <td><span class="badge badge-${l[9] === 'Parked' ? 'parked' : 'done'}">${l[9]}</span></td>`;
+                                <td><strong style="color:#5cb85c;">${feeFormatted}</strong></td>
+                                <td><span class="badge badge-${isCompleted ? 'done' : 'parked'}">${isCompleted ? 'Completed' : 'Parked'}</span></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -599,7 +588,7 @@ def dashboard_status():
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT * FROM car_logs ORDER BY id DESC LIMIT 10")
+    c.execute("SELECT * FROM car_logs ORDER BY id DESC LIMIT 25")
     logs = c.fetchall()
     c.execute("SELECT COUNT(*), COALESCE(SUM(fine_amount), 0) FROM penalty_logs")
     p_count, p_total = c.fetchone()
@@ -633,7 +622,7 @@ if __name__ == "__main__":
 
     print("=" * 65)
     print("  CAR PARK MANAGEMENT SYSTEM (CTRL ALT EVERYTHING)")
-    print("  Exit Time & Fee Logging Active | Dashboard Synchronized")
+    print(f"  Database Path: {DB_FILE}")
     print("  Live Command Center: http://127.0.0.1:5000")
     print("=" * 65)
 
