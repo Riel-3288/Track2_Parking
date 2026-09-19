@@ -23,7 +23,18 @@ def webhook_listener():
     if request.method == "GET":
         return jsonify({"status": "online"}), 200
 
+    raw_body = request.get_data()
     data = request.get_json(force=True, silent=True) or {}
+    event_class = data.get("EventClass")
+
+    ok, reason = auth.verify_webhook_signature(data)
+    database.log_webhook_call(request.remote_addr, event_class, bool(data.get("Signature")), reason)
+
+    if not ok:
+        print(f"⚠️  [UNSIGNED/INVALID WEBHOOK] from {request.remote_addr} | {event_class} | {reason}")
+        if config.WEBHOOK_REQUIRE_SIGNATURE:
+            return jsonify({"status": "error", "message": "invalid or missing signature"}), 401
+
     event_id = data.get("EventId")
     event_class = data.get("EventClass")
 
@@ -222,18 +233,24 @@ def login():
         password = request.form.get("password")
         
         users = auth.load_users()
-        
+
+        ip = request.remote_addr
+
         if action == "login":
             user = users.get(username)
             if user and user["password"] == password:
+                history = database.get_recent_logins(username, 3) 
+                database.log_login_attempt(username, True, ip, "login_success")
+
                 session["username"] = username
                 session["role"] = user["role"]
-                
-                if user["role"] == "admin":
-                    return redirect(url_for("admin_dashboard"))
-                else:
-                    return redirect(url_for("operator_dashboard"))
+                session["last_logins"] = history
+
+                return redirect(url_for("admin_dashboard" if user["role"] == "admin"
+                                        else "operator_dashboard"))
             else:
+                reason = "unknown_user" if not user else "wrong_password"
+                database.log_login_attempt(username or "(blank)", False, ip, reason)
                 error = "Invalid credentials. Please try again."
                 
         elif action == "signup":
