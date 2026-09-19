@@ -17,7 +17,6 @@ app.secret_key = "ctrl_alt_everything_super_secret_key"
 USERS_FILE = "users.json"
 
 def load_users():
-    """从 JSON 文件加载用户，如果文件不存在则自动创建默认的 admin 和 operator"""
     if not os.path.exists(USERS_FILE):
         default_users = {
             "admin": {"password": "admin", "role": "admin"},
@@ -35,12 +34,14 @@ def save_users(users):
         json.dump(users, f, indent=4)
 
 # ==============================================================================
-# CONFIGURATION
+# CONFIGURATION & ABSOLUTE PATHS
 # ==============================================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(BASE_DIR, "parking.db")
+
 SIMULATOR_BASE_URL = "http://127.0.0.1:9898/api/v1"
 ADMIN_NAME = "admin"
 ADMIN_PASS = "admin"
-DB_FILE = "parking.db"
 
 jwt_token = None
 auth_lock = threading.Lock()
@@ -98,11 +99,6 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         reason TEXT, fine_amount REAL, timestamp TEXT
     )''')
-    # Clean up past unclosed rows so dashboard looks clean immediately
-    c.execute('''UPDATE car_logs 
-                 SET exit_time = datetime('now', 'localtime'),
-                     parking_cost = 1.0, charging_cost = 0.0, total_paid = 1.0, status = 'Completed'
-                 WHERE exit_time IS NULL AND status = 'Completed' ''')
     conn.commit()
     conn.close()
 
@@ -116,20 +112,30 @@ def log_car_entry(plate, car_type, spot):
     conn.close()
 
 def log_car_exit(plate, p_cost, c_cost, total):
+    """Updates database with exit timestamp, calculated fees, and marks Completed."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('''UPDATE car_logs 
-                 SET exit_time = datetime('now', 'localtime'),
-                     parking_cost = ?, charging_cost = ?, total_paid = ?, status = 'Completed'
-                 WHERE id = (
-                     SELECT id FROM car_logs 
-                     WHERE TRIM(UPPER(plate)) = TRIM(UPPER(?)) 
-                     ORDER BY id DESC LIMIT 1
-                 )''',
-              (p_cost, c_cost, total, plate.strip()))
+    clean_plate = plate.strip()
+
+    c.execute('''SELECT id FROM car_logs 
+                 WHERE TRIM(UPPER(plate)) = TRIM(UPPER(?)) 
+                 ORDER BY id DESC LIMIT 1''', (clean_plate,))
+    row = c.fetchone()
+
+    if row:
+        c.execute('''UPDATE car_logs 
+                     SET exit_time = datetime('now', 'localtime'),
+                         parking_cost = ?, charging_cost = ?, total_paid = ?, status = 'Completed'
+                     WHERE id = ?''',
+                  (p_cost, c_cost, total, row[0]))
+    else:
+        c.execute('''INSERT INTO car_logs (plate, car_type, spot_name, entry_time, exit_time, parking_cost, charging_cost, total_paid, status)
+                     VALUES (?, 'Normal', 'Exit', datetime('now', '-2 minutes', 'localtime'), datetime('now', 'localtime'), ?, ?, ?, 'Completed')''',
+                  (clean_plate, p_cost, c_cost, total))
+
     conn.commit()
     conn.close()
-    print(f"[DB LOGGED] Exit time & fee saved for '{plate}': ${total:.2f}")
+    print(f"[DB LOGGED] Exit time & fee saved for '{clean_plate}': ${total:.2f} (Status: Completed)")
 
 def log_penalty(reason, fine):
     conn = sqlite3.connect(DB_FILE)
@@ -139,7 +145,6 @@ def log_penalty(reason, fine):
               (reason, fine))
     conn.commit()
     conn.close()
-
 
 # ==============================================================================
 # SAFE SPOT OCCUPANCY CHECK
@@ -156,6 +161,7 @@ def is_spot_empty(spot):
 # SIMULATOR API CLIENT (JWT AUTHENTICATED)
 # ==============================================================================
 def login_to_simulator():
+    """Logs in using credentials and caches Bearer JWT token."""
     global jwt_token
     with auth_lock:
         url = f"{SIMULATOR_BASE_URL}/auth/login"
@@ -171,7 +177,9 @@ def login_to_simulator():
             print(f"[AUTH ERROR] Cannot connect to simulator on port 9898: {e}")
         return False
 
+
 def call_simulator_api(method, endpoint, payload=None, params=None):
+    """Sends authenticated HTTP requests to the simulator."""
     global jwt_token
     if not jwt_token and not login_to_simulator():
         return None
@@ -201,7 +209,7 @@ def call_simulator_api(method, endpoint, payload=None, params=None):
 
 
 # ==============================================================================
-# SMART SELF-REPAIRING GATE CONTROLLER (WITH TIMED DELAYS)
+# SMART SELF-REPAIRING GATE CONTROLLER
 # ==============================================================================
 def safe_open_gate(gate_name):
     barriers = call_simulator_api("GET", "/list-barriers")
@@ -215,15 +223,18 @@ def safe_open_gate(gate_name):
     print(f"[GATE] Lifting barrier '{gate_name}'...")
     call_simulator_api("POST", f"/barrier-gates/{gate_name}/open")
 
+
 def safe_close_gate(gate_name):
     print(f"[GATE] Lowering barrier '{gate_name}'...")
     call_simulator_api("POST", f"/barrier-gates/{gate_name}/close")
+
 
 def delayed_close_gate(gate_name, delay_seconds=3.0):
     def _close():
         time.sleep(delay_seconds)
         safe_close_gate(gate_name)
     threading.Thread(target=_close, daemon=True).start()
+
 
 
 # ==============================================================================
@@ -310,26 +321,10 @@ def initialize_system():
                     reserved_spots.add(s.get("name"))
                     print(f"[INIT SYNC] Bay '{s.get('name')}' is already occupied.")
 
-    # RESCUE: Check if cars are waiting at Entrance or Exit on boot
-    if isinstance(spots, list):
-        for s in spots:
-            purpose = s.get("purpose")
-            detected = s.get("detectedCars")
-            has_car = (isinstance(detected, int) and detected > 0) or (isinstance(detected, list) and len(detected) > 0)
-            if purpose == "EntrySpot" and has_car:
-                print("[INIT RESCUE] Car detected at entrance! Lifting gateA...")
-                safe_open_gate(entry_gate_name)
-            elif purpose == "ExitSpot" and has_car:
-                print("[INIT RESCUE] Car detected at exit! Lifting gateB and releasing...")
-                safe_open_gate(exit_gate_name)
-                time.sleep(1.5)
-                call_simulator_api("POST", "/car/WCT%20759/goto/leavepark")
-
     print("--- [INITIALIZATION COMPLETE] ---\n")
 
-
 # ==============================================================================
-# WEBHOOK EVENT HANDLER (NO AUTH REQUIRED FOR SIMULATOR)
+# WEBHOOK EVENT HANDLER
 # ==============================================================================
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook_listener():
@@ -352,23 +347,26 @@ def webhook_listener():
         spot_type = data.get("SpotType")
         direction = data.get("Direction")
         car_type = data.get("CarType", "Normal")
-        duration = int(data.get("PlannedParkingDurationInMinutes", 1))
+        planned_duration = int(data.get("PlannedParkingDurationInMinutes", 0))
 
         if not car_plate:
             return jsonify({"status": "ignored"}), 200
 
-        safe_plate = urllib.parse.quote(car_plate)
+        raw_plate = car_plate.strip()
+        nospace_plate = raw_plate.replace(" ", "")
 
-        # A. Entrance Arrival
+        # A. Entrance Arrival -> Record planned duration & Dispatch
         if spot_type == "EntrySpot" and direction == "CarIn":
             target_spot = allocate_parking_spot(car_type)
             if target_spot:
-                active_cars[car_plate] = {
-                    "spot": target_spot, "type": car_type,
-                    "duration": duration, "charged": False
+                active_cars[raw_plate] = {
+                    "spot": target_spot,
+                    "type": car_type,
+                    "duration": max(1, planned_duration),
+                    "charged": False
                 }
-                log_car_entry(car_plate, car_type, target_spot)
-                print(f"\n[ENTRY] Admitting '{car_plate}' ({car_type}) -> Bay '{target_spot}'")
+                log_car_entry(raw_plate, car_type, target_spot)
+                print(f"\n[ENTRY] Admitting '{raw_plate}' ({car_type}) -> Bay '{target_spot}' (Planned: {planned_duration} mins)")
 
                 safe_open_gate(entry_gate_name)
 
@@ -377,88 +375,96 @@ def webhook_listener():
                     print(f"[DISPATCH] Arm raised. Directing '{plate}' into '{spot}'...")
                     call_simulator_api("POST", f"/car/{plate}/goto/{spot}")
 
-                threading.Thread(target=_dispatch_entry, args=(safe_plate, target_spot), daemon=True).start()
+                threading.Thread(target=_dispatch_entry, args=(nospace_plate, target_spot), daemon=True).start()
             else:
-                print(f"[ENTRY REJECT] Lot full for '{car_plate}'!")
+                print(f"[ENTRY REJECT] Lot full for '{raw_plate}'!")
 
-        # B. Cleared entry box
+        # B. Cleared entry box -> Delay close of gateA by 3s
         elif spot_type == "EntrySpot" and direction == "CarOut":
-            print(f"[GATE] Car cleared entry box. Delaying close of '{entry_gate_name}' by 3s...")
             delayed_close_gate(entry_gate_name, delay_seconds=3.0)
 
-        # C. Finished parking -> Direct to EXIT
+        # C1. Car physically enters parking bay -> Capture exact planned stay if updated!
+        elif spot_type == "Park" and direction == "CarIn":
+            if planned_duration > 0:
+                car_info = active_cars.setdefault(raw_plate, {})
+                car_info["duration"] = planned_duration
+                print(f"[PARK DOCKED] '{raw_plate}' parked in '{spot_name}'. Simulator stay duration: {planned_duration} mins.")
+
+        # C2. Finished parking & leaves bay -> Direct to EXIT & release reservation
         elif spot_type == "Park" and direction == "CarOut":
             with state_lock:
                 reserved_spots.discard(spot_name)
-            print(f"\n[PARK FINISHED] '{car_plate}' left bay '{spot_name}'. Directing to EXIT...")
-            call_simulator_api("POST", f"/car/{safe_plate}/goto/exit")
+            print(f"\n[PARK FINISHED] '{raw_plate}' left bay '{spot_name}'. Directing to EXIT...")
+            call_simulator_api("POST", f"/car/{nospace_plate}/goto/exit")
 
-        # D. Arrived at Exit Box -> Wait for full stop -> CHARGE
+        # D. Arrived at Exit Box -> Calculate Fee from Simulator's Exact Planned Stay
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarIn":
             safe_close_gate(exit_gate_name)
 
-            car_info = active_cars.get(car_plate, {})
-            elapsed_seconds = time.time() - car_info.get("entry_timestamp", time.time())
-            duration = max(1, int(elapsed_seconds / 60))
+            car_info = active_cars.get(raw_plate, {})
+            
+            # Use simulator's internal duration to eliminate Penalty_CarChargedIncorrectParkingAmount
+            duration = max(1, int(car_info.get("duration", 1)))
             is_electric = (car_info.get("type") == "Electric")
 
             parking_cost = float(duration)
             charging_cost = float(duration * 2) if is_electric else 0.0
             total_fee = parking_cost + charging_cost
+
+            car_info["parking_cost"] = parking_cost
+            car_info["charging_cost"] = charging_cost
             car_info["expected_cost"] = total_fee
 
-            log_car_exit(car_plate, parking_cost, charging_cost, total_fee)
+            # Record exit time and fee in database
+            log_car_exit(raw_plate, parking_cost, charging_cost, total_fee)
 
             if not car_info.get("charged"):
                 car_info["charged"] = True
-                print(f"[EXIT] Waiting 1.5s for '{car_plate}' to come to a full physical stop before charging...")
+                print(f"[EXIT] '{raw_plate}' fee: {duration} mins -> Parking=${parking_cost:.2f}, Charging=${charging_cost:.2f}")
 
                 def _charge_after_stop(plate, p_cost, c_cost):
-                    time.sleep(1.5)
-                    print(f"[CHARGE] Car stopped. Requesting payment from '{plate}' (P={p_cost}, C={c_cost})...")
+                    time.sleep(1.5)  # Wait for car to come to a complete halt
+                    print(f"[CHARGE] Requesting payment from '{plate}' (P={p_cost}, C={c_cost})...")
                     charge_params = {"parkingCost": p_cost, "chargingCost": c_cost}
-                    call_simulator_api("POST", f"/car/{plate}/charge", params=charge_params)
+                    # Send with clean plate (no spaces) to avoid URL %20 errors in simulator
+                    call_simulator_api("POST", f"/car/{plate}/charge", payload=charge_params, params=charge_params)
 
-                threading.Thread(target=_charge_after_stop, args=(safe_plate, parking_cost, charging_cost), daemon=True).start()
+                threading.Thread(target=_charge_after_stop, args=(nospace_plate, parking_cost, charging_cost), daemon=True).start()
 
         # E. Cleared Exit Barrier -> Lower gateB immediately
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarOut":
-            print(f"[EXIT COMPLETE] Car '{car_plate}' departed. Lowering '{exit_gate_name}'...")
+            print(f"[EXIT COMPLETE] Car '{raw_plate}' departed. Lowering '{exit_gate_name}'...")
             safe_close_gate(exit_gate_name)
-            active_cars.pop(car_plate, None)
+            active_cars.pop(raw_plate, None)
 
-    # 2. Payment confirmed -> Lift gateB -> Leave Park
+    # 2. Payment confirmed -> Lift gateB, wait 1.5s, dispatch to leavepark, auto-close!
     elif event_class == "payment_made":
-        car_plate = data.get("CarPlateNumber")
+        car_plate = data.get("CarPlateNumber", "").strip()
+        nospace_plate = car_plate.replace(" ", "")
         car_info = active_cars.get(car_plate, {})
-        safe_plate = urllib.parse.quote(car_plate)
 
-        raw_amount = data.get("Amount")
-        if raw_amount is None:
-            raw_amount = data.get("amount")
-        
+        raw_amount = data.get("Amount") or data.get("amount")
         amount = float(raw_amount) if raw_amount is not None else float(car_info.get("expected_cost", 1.0))
         if amount == 0.0:
             amount = float(car_info.get("expected_cost", 1.0))
 
-        p_cost = float(car_info.get("duration", 1.0))
-        c_cost = float(car_info.get("expected_cost", amount)) - p_cost
-        if c_cost < 0: 
-            c_cost = 0.0
+        p_cost = float(car_info.get("parking_cost", 1.0))
+        c_cost = float(car_info.get("charging_cost", 0.0))
 
+        # Update database with exact paid amount
         log_car_exit(car_plate, p_cost, c_cost, amount)
 
         print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{exit_gate_name}'...")
         safe_open_gate(exit_gate_name)
 
         def _dispatch_exit(plate):
-            time.sleep(1.5)
+            time.sleep(1.5)  # Wait for gateB arm to physically rise
             print(f"[EXIT DISPATCH] Arm raised. Releasing '{plate}' from park...")
             call_simulator_api("POST", f"/car/{plate}/goto/leavepark")
             time.sleep(4.0)
             safe_close_gate(exit_gate_name)
 
-        threading.Thread(target=_dispatch_exit, args=(safe_plate,), daemon=True).start()
+        threading.Thread(target=_dispatch_exit, args=(nospace_plate,), daemon=True).start()
 
     # 3. Auto-Repairs
     elif event_class == "component_broken":
