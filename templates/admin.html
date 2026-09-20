@@ -226,14 +226,6 @@
         .bay.free { background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.25); color: #b6f3cb; }
         .bay.broken { background: var(--warning-dim); border-color: rgba(240,173,78,0.4); color: #ffd699; font-weight: 600; }
 
-        .controls { background: var(--bg-panel); border: 1px solid var(--border-soft); padding: 16px 18px; border-radius: var(--radius); }
-        .gate-group { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
-        .gate-group:last-of-type { margin-bottom: 0; }
-        .gate-group-label { width: 150px; flex-shrink: 0; font-size: 13px; color: var(--text-muted); font-weight: 500; }
-        .btn-row { display: flex; gap: 8px; }
-        .danger-zone { border-top: 1px dashed var(--border); margin-top: 14px; padding-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-        .danger-zone p { margin: 0; font-size: 12.5px; color: var(--text-muted); max-width: 420px; }
-
         /* ============ Revenue ============ */
         .revenue-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 4px 0 18px; }
         .stat-card { background: var(--bg-panel); padding: 16px 18px; border-radius: var(--radius); border: 1px solid var(--border-soft); border-left: 3px solid var(--accent); }
@@ -370,7 +362,7 @@
         <!-- ================= Live Parking ================= -->
         <section id="sec-live" class="tab-section active">
             <div class="stat-chips">
-                <div class="chip"><span class="chip-label">Available spots</span><span class="chip-value" id="free-spots">-- / 30</span></div>
+                <div class="chip"><span class="chip-label">Available spots</span><span class="chip-value" id="free-spots">-- / --</span></div>
                 <div class="chip"><span class="chip-label">Entrance (Gate A)</span><span class="chip-value" id="gate-a">--</span></div>
                 <div class="chip"><span class="chip-label">Exit (Gate B)</span><span class="chip-value" id="gate-b">--</span></div>
             </div>
@@ -381,32 +373,6 @@
                 <span class="legend-item"><span class="legend-dot broken"></span> Under maintenance</span>
             </div>
             <div class="bays-grid" id="bays-container"></div>
-
-            <div class="controls">
-                <h3 style="margin-bottom:14px;">Manual operator override</h3>
-
-                <div class="gate-group">
-                    <span class="gate-group-label">Gate A — Entrance</span>
-                    <div class="btn-row">
-                        <button onclick="controlGate('gateA', 'open')">Open</button>
-                        <button onclick="controlGate('gateA', 'close')" class="btn-secondary">Close</button>
-                        <button onclick="controlGate('gateA', 'repair')" class="btn-warning">Repair</button>
-                    </div>
-                </div>
-                <div class="gate-group">
-                    <span class="gate-group-label">Gate B — Exit</span>
-                    <div class="btn-row">
-                        <button onclick="controlGate('gateB', 'open')">Open</button>
-                        <button onclick="controlGate('gateB', 'close')" class="btn-secondary">Close</button>
-                        <button onclick="controlGate('gateB', 'repair')" class="btn-warning">Repair</button>
-                    </div>
-                </div>
-
-                <div class="danger-zone">
-                    <p>Clears every recorded penalty. This can't be undone.</p>
-                    <button onclick="resetPenalties()" class="btn-danger">Reset penalties</button>
-                </div>
-            </div>
         </section>
 
         <!-- ================= Revenue Analysis ================= -->
@@ -414,8 +380,17 @@
             <p class="section-intro">Requires <code>can_view_revenue</code> permission.</p>
 
             <div class="revenue-stats">
-                <div class="stat-card"><div>Total revenue</div><div class="stat-val" style="color:var(--success);" id="revenue">$0.00</div></div>
-                <div class="stat-card" style="border-left-color:var(--danger);"><div>Total penalties</div><div class="stat-val" style="color:var(--danger);" id="penalties">0</div></div>
+                <div class="stat-card">
+                    <div>Total revenue</div>
+                    <div class="stat-val" style="color:var(--success);" id="revenue">$0.00</div>
+                </div>
+                <div class="stat-card" style="border-left-color:var(--danger); display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div>Total penalties</div>
+                        <div class="stat-val" style="color:var(--danger);" id="penalties">0</div>
+                    </div>
+                    <button onclick="resetPenalties()" class="btn-danger" style="font-size: 12px; padding: 6px 12px;" title="Clear all penalty records">Reset</button>
+                </div>
             </div>
 
             <div id="revenue-status"></div>
@@ -669,7 +644,8 @@
             if (res.status === 401) { window.location.href = '/login'; return; }
             const data = await res.json();
 
-            document.getElementById('free-spots').innerText = `${data.free_spots} / 30`;
+            // Update free spots dynamically based on total actual spots mapped
+            document.getElementById('free-spots').innerText = `${data.free_spots} / ${data.spots.length}`;
             document.getElementById('gate-a').innerText = data.gate_a;
             document.getElementById('gate-b').innerText = data.gate_b;
             document.getElementById('penalties').innerText = `${data.penalties_count} (-${data.penalties_total})`;
@@ -748,14 +724,16 @@
             });
         }
 
-        async function controlGate(name, action) {
-            const res = await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
-            const data = await res.json();
-
-            if (res.status === 403) {
-                alert("RBAC System Access Denied:\n" + data.message);
-            } else {
-                fetchStatus();
+        async function resetPenalties() {
+            if (confirm("Are you sure you want to clear all penalty records? This will also reset the penalty revenue calculation.")) {
+                const res = await fetch(`/api/operator/penalties/reset`, { method: 'POST' });
+                if (res.status === 403) {
+                    const data = await res.json();
+                    alert("RBAC System Access Denied:\n" + data.message);
+                } else {
+                    fetchStatus();
+                    fetchRevenue(); 
+                }
             }
         }
 
@@ -772,18 +750,6 @@
                 document.getElementById('rev-net').innerText = '$' + data.report.net_profit.toFixed(2);
             } else {
                 alert("RBAC System Access Denied:\n" + (data.message || 'Unauthorized'));
-            }
-        }
-
-        async function resetPenalties() {
-            if (confirm("Are you sure you want to clear all penalty records?")) {
-                const res = await fetch(`/api/operator/penalties/reset`, { method: 'POST' });
-                if (res.status === 403) {
-                    const data = await res.json();
-                    alert("RBAC System Access Denied:\n" + data.message);
-                } else {
-                    fetchStatus();
-                }
             }
         }
 
