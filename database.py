@@ -110,3 +110,28 @@ def get_recent_logins(username, limit=3):
     rows = c.fetchall()
     conn.close()
     return [{"time": r[0], "success": bool(r[1]), "ip": r[2], "reason": r[3]} for r in rows]
+
+
+def get_recent_webhook_logs(limit=50, verdict_filter="All", date_filter=None):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    query = "SELECT event_class, signed, verdict, remote_addr, received_at FROM webhook_logs WHERE 1=1"
+    params = []
+
+    if verdict_filter == "Blocked":
+        query += " AND verdict NOT IN ('verified', 'signature_present')"
+    elif verdict_filter == "Verified":
+        query += " AND verdict IN ('verified', 'signature_present')"
+
+    if date_filter:
+        query += " AND received_at LIKE ?"
+        params.append(f"{date_filter}%")
+
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    c.execute(query, params)
+    rows = c.fetchall()
+    conn.close()
+    return [{"event_class": r[0], "signed": bool(r[1]), "verdict": r[2], "ip": r[3], "time": r[4]} for r in rows]
+

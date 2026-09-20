@@ -91,24 +91,12 @@ def compute_webhook_signature(data: dict) -> str:
     return hashlib.md5(joined.encode("utf-8")).hexdigest()
 
 def verify_webhook_signature(data: dict):
-    """
-    Verify the webhook signature using HMAC and a secret key.
-    """
     provided = (data.get("Signature") or "").strip().lower()
     if not provided:
         return False, "missing_signature"
-
     expected = compute_webhook_signature(data)
-    if hmac.compare_digest(expected, provided):
-        return True, "verified"
-    return False, "bad_signature"
-    if not config.WEBHOOK_VERIFY_ALGORITHM:
-        return True, "signature_present"     
-
-    event_id = str(data.get("EventId", ""))
-    seq_id = str(data.get("SequenceId", ""))
-    expected = _md5(f"{event_id}{seq_id}{config.WEBHOOK_SECRET}")  
-
-    if hmac.compare_digest(expected, provided):
-        return True, "verified"
-    return False, "bad_signature"
+    if not hmac.compare_digest(expected, provided):
+        print(f"[SIG DEBUG] expected={expected} received={provided}")
+        print(f"[SIG DEBUG] data={data}")
+        return False, "bad_signature"
+    return True, "verified"

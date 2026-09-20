@@ -80,6 +80,28 @@
         </div>
     </div>
 
+    <section>
+        <h2>🛡️ Webhook Security Log</h2>
+        <div class="filter-container" style="margin-bottom:10px;">
+            <div class="filter-controls">
+                <label for="webhook-verdict-filter"><strong>Show: </strong></label>
+                <select id="webhook-verdict-filter" onchange="fetchWebhookLogs()">
+                    <option value="All">All</option>
+                    <option value="Blocked">Blocked only</option>
+                    <option value="Verified">Verified only</option>
+                </select>
+
+                <label for="webhook-date-filter"><strong>Date: </strong></label>
+                <input type="date" id="webhook-date-filter" onchange="fetchWebhookLogs()">
+                <button onclick="clearWebhookFilters()">Clear</button>
+            </div>
+        </div>
+        <table style="max-width:700px;">
+            <thead><tr><th>Time</th><th>Event</th><th>Signed?</th><th>Verdict</th><th>Source IP</th></tr></thead>
+            <tbody id="webhook-logs-tbody"></tbody>
+        </table>
+    </section>
+
     {% if last_logins %}
     <section>
         <h2>🔐 Recent Login Activity (last {{ last_logins|length }})</h2>
@@ -103,7 +125,7 @@
     {% else %}
     <p style="color:#888;font-size:13px;">No previous login history for this account.</p>
     {% endif %}
-    
+
     <section class="revenue-section">
         <h2>📈 Revenue Analysis (RBAC Protected)</h2>
         <div class="revenue-stats">
@@ -331,6 +353,45 @@
         // ==========================================
         // Existing Functionality 
         // ==========================================
+        async function fetchWebhookLogs() {
+            const verdict = document.getElementById('webhook-verdict-filter').value;
+            const date = document.getElementById('webhook-date-filter').value;
+
+            const params = new URLSearchParams();
+            if (verdict !== 'All') params.set('verdict', verdict);
+            if (date) params.set('date', date);
+
+            const res = await fetch(`/api/admin/webhook-logs?${params.toString()}`);
+            if (!res.ok) return;
+            const data = await res.json();
+
+            const tbody = document.getElementById('webhook-logs-tbody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+
+            if (data.logs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;">No matching webhook logs.</td></tr>';
+                return;
+            }
+
+            data.logs.forEach(l => {
+                const ok = (l.verdict === 'verified' || l.verdict === 'signature_present');
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${l.time}</td>
+                                <td>${l.event_class || '--'}</td>
+                                <td>${l.signed ? 'Yes' : 'No'}</td>
+                                <td><span class="badge" style="background:${ok ? '#5cb85c' : '#d9534f'};color:white;">${l.verdict}</span></td>
+                                <td>${l.ip}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function clearWebhookFilters() {
+            document.getElementById('webhook-verdict-filter').value = 'All';
+            document.getElementById('webhook-date-filter').value = '';
+            fetchWebhookLogs();
+        }
+
         async function fetchRevenue() {
             const res = await fetch('/api/admin/revenue');
             if (res.status === 401 || res.status === 403) return;

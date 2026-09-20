@@ -8,6 +8,7 @@ import auth
 import database
 import simulator
 import math
+import json
 
 app = Flask(__name__)
 app.secret_key = "ctrl_alt_everything_super_secret_key" 
@@ -24,7 +25,10 @@ def webhook_listener():
         return jsonify({"status": "online"}), 200
 
     raw_body = request.get_data()
-    data = request.get_json(force=True, silent=True) or {}
+    try:
+        data = json.loads(raw_body, parse_float=str, parse_int=str)
+    except Exception:
+        data = {}
     event_class = data.get("EventClass")
 
     ok, reason = auth.verify_webhook_signature(data)
@@ -242,11 +246,10 @@ def login():
         if action == "login":
             user = users.get(username)
             if user and user["password"] == password:
-                history = database.get_recent_logins(username, 3)
                 database.log_login_attempt(username, True, ip, "login_success")
                 session["username"] = username
                 session["role"] = user["role"]
-                session["last_logins"] = history 
+                # 不再需要 session["last_logins"] = history 这一行，删掉即可
 
                 if user["role"] == "admin":
                     return redirect(url_for("admin_dashboard"))
@@ -298,7 +301,7 @@ def operator_dashboard():
         "operator.html",
         username=session.get("username"),
         role=session.get("role"),
-        last_logins=session.get("last_logins", [])  
+        last_logins=database.get_recent_logins(session.get("username"), 3)
     )
 
 @app.route("/admin", methods=["GET"])
@@ -308,7 +311,7 @@ def admin_dashboard():
         "admin.html",
         username=session.get("username"),
         role=session.get("role"),
-        last_logins=session.get("last_logins", [])
+        last_logins=database.get_recent_logins(session.get("username"), 3)
     )
 
 # ==============================================================================
@@ -428,6 +431,14 @@ def generate_financial_report():
         }
     })
 
+# Login attempt history API for admins
+@app.route("/api/admin/webhook-logs", methods=["GET"])
+@auth.admin_required
+def webhook_logs_api():
+    verdict_filter = request.args.get("verdict", "All")
+    date_filter = request.args.get("date")   # 格式 "YYYY-MM-DD"，前端 date input 原生就是这个格式
+    logs = database.get_recent_webhook_logs(limit=50, verdict_filter=verdict_filter, date_filter=date_filter)
+    return jsonify({"logs": logs})
 
 # ==============================================================================
 # MAIN ENTRYPOINT
