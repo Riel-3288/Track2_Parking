@@ -160,6 +160,15 @@ def initialize_system():
     fans = call_simulator_api("GET", "/list-exhaust-fans")
     if isinstance(fans, list):
         config.exhaust_fans = [f.get("name") for f in fans if "name" in f]
+        config.zone_fans_map = {}
+        for f in fans:
+            zone = f.get("zoneParent")
+            name = f.get("name")
+            if zone and name:
+                config.zone_fans_map.setdefault(zone, []).append(name)
+    # Fallback: fill in any zone the live API didn't tag correctly
+    for zone, fan_list in config.STATIC_ZONE_FANS.items():
+        config.zone_fans_map.setdefault(zone, fan_list)
 
     # Repair broken gates on startup
     barriers = call_simulator_api("GET", "/list-barriers")
@@ -183,17 +192,73 @@ def initialize_system():
 
     print("--- [INITIALIZATION COMPLETE] ---\n")
 
-def handle_carbon_monoxide_event(danger_level):
-    """Turns exhaust fans on/off based on the simulator's reported CO danger level."""
-    fans = config.exhaust_fans or ["fan0"]
-    if danger_level in ["Mid", "High", "Critical"]:
-        print(f"[CO ALERT] Danger level '{danger_level}'. Turning fans ON: {fans}")
+
+
+def handle_carbon_monoxide_event(danger_level, carbon_monoxide_level, zone_name):
+    """Turns exhaust fans on/off per zone based on the actual CO level, threshold = 50."""
+    try:
+        co_level = float(carbon_monoxide_level) if carbon_monoxide_level is not None else None
+    except (TypeError, ValueError):
+        co_level = None
+
+    fans = config.zone_fans_map.get(zone_name)
+    if not fans:
+        print(f"[CO WARNING] No fans mapped for zone '{zone_name}' — falling back to all fans.")
+        fans = config.exhaust_fans or ["fan0"]
+
+    tag = f"[{zone_name}] " if zone_name else ""
+    should_run = (co_level >= 50) if co_level is not None else (danger_level in ["Mid", "High", "Critical"])
+
+    if should_run:
+        print(f"[CO ALERT] {tag}Level={co_level} Danger='{danger_level}'. Turning fans ON: {fans}")
         for fan in fans:
             call_simulator_api("POST", f"/exhaust-fans/{fan}/on")
-    elif danger_level == "Safe":
-        print(f"[CO SAFE] Danger level '{danger_level}'. Turning fans OFF: {fans}")
+    else:
+        print(f"[CO SAFE] {tag}Level={co_level} Danger='{danger_level}'. Turning fans OFF: {fans}")
         for fan in fans:
             call_simulator_api("POST", f"/exhaust-fans/{fan}/off")
+
+    if zone_name:
+        config.zone_fan_state[zone_name] = should_run
+
+
+def poll_co_levels():
+    """Background loop: periodically checks live CO levels per zone and turns
+    fans on/off accordingly. Needed because webhooks only fire at Mid/High/
+    Critical — the simulator never sends one when a zone drops back to Safe,
+    so without this fans would stay on forever after the last alert."""
+    while True:
+        time.sleep(config.CO_POLL_INTERVAL_SECONDS)
+        zones = call_simulator_api("GET", "/list-zones")
+        if not isinstance(zones, list):
+            continue
+
+        for z in zones:
+            zone_name = z.get("name")
+            co_level = z.get("gasCarbonMonoxideLevel")
+            if zone_name is None or co_level is None:
+                continue
+
+            should_run = co_level >= 50
+            currently_on = config.zone_fan_state.get(zone_name, False)
+            if should_run == currently_on:
+                continue  # no change — skip API calls
+
+            fans = config.zone_fans_map.get(zone_name) or config.exhaust_fans or ["fan0"]
+            tag = f"[{zone_name}] "
+            if should_run:
+                print(f"[CO POLL ALERT] {tag}Level={co_level}. Turning fans ON: {fans}")
+                for fan in fans:
+                    call_simulator_api("POST", f"/exhaust-fans/{fan}/on")
+            else:
+                print(f"[CO POLL SAFE] {tag}Level={co_level}. Turning fans OFF: {fans}")
+                for fan in fans:
+                    call_simulator_api("POST", f"/exhaust-fans/{fan}/off")
+
+            config.zone_fan_state[zone_name] = should_run
+
+def start_co_polling():
+    threading.Thread(target=poll_co_levels, daemon=True).start()
 
 
 def get_zone_for_spot(spot_name):

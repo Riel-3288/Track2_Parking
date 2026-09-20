@@ -8,6 +8,7 @@ import auth
 import database
 import simulator
 import math
+import json
 
 app = Flask(__name__)
 app.secret_key = "ctrl_alt_everything_super_secret_key" 
@@ -47,7 +48,10 @@ def webhook_listener():
         return jsonify({"status": "online"}), 200
 
     raw_body = request.get_data()
-    data = request.get_json(force=True, silent=True) or {}
+    try:
+        data = json.loads(raw_body, parse_float=str, parse_int=str)
+    except Exception:
+        data = {}
     event_class = data.get("EventClass")
 
     ok, reason = auth.verify_webhook_signature(data)
@@ -282,7 +286,11 @@ def webhook_listener():
 
     # 4. Carbon Monoxide safety
     elif event_class == "carbon_monoxide_event":
-        simulator.handle_carbon_monoxide_event(data.get("DangerLevel"))
+        simulator.handle_carbon_monoxide_event(
+            data.get("DangerLevel"),
+            data.get("CarbonMonoxideLevel"),
+            data.get("ZoneName")
+    )
 
     # 5. Log Penalties
     elif event_class == "penalty":
@@ -301,31 +309,30 @@ def webhook_listener():
 def login():
     error = None
     if request.method == "POST":
-        action = request.form.get("action") 
+        action = request.form.get("action")
         username = request.form.get("username").strip()
         password = request.form.get("password")
-        
-        users = auth.load_users()
-
         ip = request.remote_addr
+
+        users = auth.load_users()
 
         if action == "login":
             user = users.get(username)
             if user and user["password"] == password:
-                history = database.get_recent_logins(username, 3) 
                 database.log_login_attempt(username, True, ip, "login_success")
-
                 session["username"] = username
                 session["role"] = user["role"]
-                session["last_logins"] = history
+                # 不再需要 session["last_logins"] = history 这一行，删掉即可
 
-                return redirect(url_for("admin_dashboard" if user["role"] == "admin"
-                                        else "operator_dashboard"))
+                if user["role"] == "admin":
+                    return redirect(url_for("admin_dashboard"))
+                else:
+                    return redirect(url_for("operator_dashboard"))
             else:
                 reason = "unknown_user" if not user else "wrong_password"
                 database.log_login_attempt(username or "(blank)", False, ip, reason)
                 error = "Invalid credentials. Please try again."
-                
+
         elif action == "signup":
             role = request.form.get("role")
             if username in users:
@@ -335,14 +342,17 @@ def login():
             else:
                 users[username] = {"password": password, "role": role}
                 auth.save_users(users)
-                
+
+                database.log_login_attempt(username, True, ip, "signup")
                 session["username"] = username
                 session["role"] = role
+                session["last_logins"] = []
+
                 if role == "admin":
                     return redirect(url_for("admin_dashboard"))
                 else:
                     return redirect(url_for("operator_dashboard"))
-            
+
     return render_template("login.html", error=error)
 
 @app.route("/logout")
@@ -360,13 +370,22 @@ def root():
 @app.route("/operator", methods=["GET"])
 @auth.login_required
 def operator_dashboard():
-    return render_template("operator.html", username=session.get("username"))
+    return render_template(
+        "operator.html",
+        username=session.get("username"),
+        role=session.get("role"),
+        last_logins=database.get_recent_logins(session.get("username"), 3)
+    )
 
 @app.route("/admin", methods=["GET"])
 @auth.admin_required
 def admin_dashboard():
-    return render_template("admin.html", username=session.get("username"))
-
+    return render_template(
+        "admin.html",
+        username=session.get("username"),
+        role=session.get("role"),
+        last_logins=database.get_recent_logins(session.get("username"), 3)
+    )
 
 # ==============================================================================
 # API ENDPOINTS FOR DASHBOARD (PROTECTED)
@@ -485,6 +504,14 @@ def generate_financial_report():
         }
     })
 
+# Login attempt history API for admins
+@app.route("/api/admin/webhook-logs", methods=["GET"])
+@auth.admin_required
+def webhook_logs_api():
+    verdict_filter = request.args.get("verdict", "All")
+    date_filter = request.args.get("date")   # 格式 "YYYY-MM-DD"，前端 date input 原生就是这个格式
+    logs = database.get_recent_webhook_logs(limit=50, verdict_filter=verdict_filter, date_filter=date_filter)
+    return jsonify({"logs": logs})
 
 # ==============================================================================
 # MAIN ENTRYPOINT
@@ -493,6 +520,7 @@ if __name__ == "__main__":
     database.init_db()
     
     simulator.initialize_system() 
+    simulator.start_co_polling() 
 
     print("=" * 65)
     print("  CAR PARK MANAGEMENT SYSTEM (CTRL ALT EVERYTHING)")
@@ -500,6 +528,7 @@ if __name__ == "__main__":
     print("  Live Command Center: http://127.0.0.1:5000")
     print("=" * 65)
 
-    simulator.handle_carbon_monoxide_event("Safe")
+    for zone in config.STATIC_ZONE_FANS:
+        simulator.handle_carbon_monoxide_event("Safe", 0, zone)
 
     app.run(host="0.0.0.0", port=5000, debug=False)

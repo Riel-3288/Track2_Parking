@@ -2,25 +2,6 @@ import sqlite3
 import config
 from datetime import datetime
 
-def log_login_attempt(username, success, ip, reason=""):
-    conn = sqlite3.connect(config.DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT INTO login_logs (username, success, ip_address, reason, attempt_time) VALUES (?,?,?,?,?)",
-              (username, 1 if success else 0, ip, reason,
-               datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
-
-def get_recent_logins(username, limit=3):
-    conn = sqlite3.connect(config.DB_FILE)
-    c = conn.cursor()
-    c.execute("""SELECT attempt_time, success, ip_address, reason
-                 FROM login_logs WHERE username = ?
-                 ORDER BY id DESC LIMIT ?""", (username, limit))
-    rows = c.fetchall()
-    conn.close()
-    return [{"time": r[0], "success": bool(r[1]), "ip": r[2], "reason": r[3]} for r in rows]
-
 def log_webhook_call(remote_addr, event_class, signed, verdict):
     conn = sqlite3.connect(config.DB_FILE)
     c = conn.cursor()
@@ -50,6 +31,16 @@ def init_db():
         verdict TEXT,
         received_at TEXT
     )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS login_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        success INTEGER,
+        ip_address TEXT,
+        reason TEXT,
+        attempt_time TEXT
+    )''')
+
     conn.commit()
     conn.close()
 
@@ -114,3 +105,51 @@ def get_car_spot(plate):
     conn.close()
 
     return row[0] if row else None
+
+
+def log_login_attempt(username, success, ip, reason=""):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO login_logs (username, success, ip_address, reason, attempt_time) VALUES (?,?,?,?,?)",
+        (username, 1 if success else 0, ip, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_recent_logins(username, limit=3):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "SELECT attempt_time, success, ip_address, reason FROM login_logs WHERE username = ? ORDER BY id DESC LIMIT ?",
+        (username, limit)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [{"time": r[0], "success": bool(r[1]), "ip": r[2], "reason": r[3]} for r in rows]
+
+
+def get_recent_webhook_logs(limit=50, verdict_filter="All", date_filter=None):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    query = "SELECT event_class, signed, verdict, remote_addr, received_at FROM webhook_logs WHERE 1=1"
+    params = []
+
+    if verdict_filter == "Blocked":
+        query += " AND verdict NOT IN ('verified', 'signature_present')"
+    elif verdict_filter == "Verified":
+        query += " AND verdict IN ('verified', 'signature_present')"
+
+    if date_filter:
+        query += " AND received_at LIKE ?"
+        params.append(f"{date_filter}%")
+
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    c.execute(query, params)
+    rows = c.fetchall()
+    conn.close()
+    return [{"event_class": r[0], "signed": bool(r[1]), "verdict": r[2], "ip": r[3], "time": r[4]} for r in rows]
+
