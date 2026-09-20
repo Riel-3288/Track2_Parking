@@ -17,7 +17,31 @@ app.secret_key = "ctrl_alt_everything_super_secret_key"
 # WEBHOOK EVENT HANDLER
 # ==============================================================================
 def get_gate_for_spot(spot_name, is_entry=True):
-    return config.entry_gate_name if is_entry else config.exit_gate_name
+    spots = simulator.call_simulator_api("GET", "/list-parking-spots")
+    spot = next((s for s in spots if s.get("name") == spot_name), None)
+    if spot:
+        zone = spot.get("zoneParent")
+        if zone in config.zone_gates:
+            return config.zone_gates[zone]["entry"] if is_entry else config.zone_gates[zone]["exit"]
+
+def is_zone_gate_working(spot):
+    zone = spot.get("zoneParent")
+
+    gate_name = config.zone_gates.get(zone, {}).get("entry")
+
+    if not gate_name:
+        return False
+
+    barriers = simulator.call_simulator_api("GET", "/list-barriers") or []
+    for gate in barriers:
+        if gate.get("name") == gate_name:
+            return (
+                not gate.get("broken")
+                and not gate.get("isUnderMaintenance")
+            )
+
+    return False
+   
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook_listener():
@@ -64,33 +88,83 @@ def webhook_listener():
 
         # A. Entrance Arrival -> Record planned duration & Dispatch
         if spot_type == "EntrySpot" and direction == "CarIn":
-            target_spot = simulator.allocate_parking_spot(car_type)
-            target_gate = get_gate_for_spot(spot_name, is_entry=True)  # 智能找门！
-            
-            if target_spot:
+
+            car_info = config.active_cars.get(raw_plate)
+
+            # Car has NOT been allocated a parking spot yet
+            if not car_info:
+                target_spot = simulator.allocate_parking_spot(car_type)
+
+                if not target_spot:
+                    print(f"[ENTRY REJECT] Lot full for '{raw_plate}'!")
+                    return jsonify({"status": "ok"}), 200
+
                 config.active_cars[raw_plate] = {
                     "spot": target_spot,
                     "type": car_type,
                     "duration": max(1, planned_duration),
                     "charged": False
                 }
+
                 database.log_car_entry(raw_plate, car_type, target_spot)
-                print(f"\n[ENTRY] Car '{raw_plate}' at '{spot_name}' -> Auto-opening '{target_gate}', Bay '{target_spot}'")
+
+            else:
+                # Already allocated - use the SAME parking spot
+                target_spot = car_info.get("spot")
+
+
+            # Find which zone the allocated parking spot belongs to
+            target_zone = simulator.get_zone_for_spot(target_spot)
+
+
+            # ZONE2: first send car to ENTRY2
+            if target_zone == "ZONE2" and spot_name != "ENTRY2":
+                print(f"[TRANSFER] '{raw_plate}' -> ENTRY2")
+
+                simulator.call_simulator_api(
+                    "POST",
+                    f"/car/{nospace_plate}/goto/ENTRY2"
+                )
+
+            # ZONE3: first send car to ENTRY3
+            elif target_zone == "ZONE3" and spot_name != "ENTRY3":
+                print(f"[TRANSFER] '{raw_plate}' -> ENTRY3")
+
+                simulator.call_simulator_api(
+                    "POST",
+                    f"/car/{nospace_plate}/goto/ENTRY3"
+                )
+
+            # Car is now at the correct zone entrance
+            else:
+                target_gate = get_gate_for_spot(target_spot, is_entry=True)
+
+                print(
+                    f"[ZONE ENTRY] '{raw_plate}' at '{spot_name}' "
+                    f"-> Opening '{target_gate}' -> '{target_spot}'"
+                )
 
                 simulator.safe_open_gate(target_gate)
 
                 def _dispatch_entry(plate, spot):
                     time.sleep(1.5)
                     print(f"[DISPATCH] Arm raised. Directing '{plate}' into '{spot}'...")
-                    simulator.call_simulator_api("POST", f"/car/{plate}/goto/{spot}")
+                    simulator.call_simulator_api(
+                        "POST",
+                        f"/car/{plate}/goto/{spot}"
+                    )
 
-                threading.Thread(target=_dispatch_entry, args=(nospace_plate, target_spot), daemon=True).start()
-            else:
-                print(f"[ENTRY REJECT] Lot full for '{raw_plate}'!")
+                threading.Thread(
+                    target=_dispatch_entry,
+                    args=(nospace_plate, target_spot),
+                    daemon=True
+                ).start()
 
         # B. Cleared entry box -> Delay close
         elif spot_type == "EntrySpot" and direction == "CarOut":
-            target_gate = get_gate_for_spot(spot_name, is_entry=True)
+
+
+            target_gate = get_gate_for_spot(database.get_car_spot(raw_plate), is_entry=True)
             simulator.delayed_close_gate(target_gate, delay_seconds=3.0)
 
         # C1. Car physically enters parking bay -> Capture exact planned stay if updated!
@@ -124,7 +198,7 @@ def webhook_listener():
 
         # D. Arrived at Exit Box -> Calculate Fee from Simulator's Exact Planned Stay
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarIn":
-            target_gate = get_gate_for_spot(spot_name, is_entry=False)
+            target_gate = get_gate_for_spot(database.get_car_spot(raw_plate), is_entry=False)
             simulator.safe_close_gate(target_gate)
 
             car_info = config.active_cars.get(raw_plate, {})
@@ -157,7 +231,7 @@ def webhook_listener():
 
         # E. Cleared Exit Barrier -> Lower gate immediately
         elif (spot_type == "ExitSpot" or spot_name in ["EXIT", "EXIT_EXIT"]) and direction == "CarOut":
-            target_gate = get_gate_for_spot(spot_name, is_entry=False)
+            target_gate = get_gate_for_spot(database.get_car_spot(raw_plate), is_entry=False)
             print(f"[EXIT COMPLETE] Car '{raw_plate}' departed. Lowering '{target_gate}'...")
             simulator.safe_close_gate(target_gate)
             config.active_cars.pop(raw_plate, None)
@@ -179,7 +253,7 @@ def webhook_listener():
         database.log_car_exit(car_plate, p_cost, c_cost, amount)
 
         # 取出刚才存下的真实 Exit Gate
-        target_gate = car_info.get("exit_gate", config.exit_gate_name)
+        target_gate = car_info.get("exit_gate", get_gate_for_spot(database.get_car_spot(car_plate), is_entry=False))
         print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{target_gate}'...")
         simulator.safe_open_gate(target_gate)
 
@@ -360,9 +434,9 @@ def dashboard_status():
     gate_a = "Unknown"
     gate_b = "Unknown"
     for b in barriers:
-        if b.get("name") == config.entry_gate_name: 
+        if b.get("name") == get_gate_for_spot("ENTRY", is_entry=True): 
             gate_a = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
-        elif b.get("name") == config.exit_gate_name: 
+        elif b.get("name") == get_gate_for_spot("EXIT", is_entry=False): 
             gate_b = f"{b.get('state')} {'(BROKEN)' if b.get('broken') else ''}"
 
     with config.state_lock:
@@ -407,10 +481,10 @@ def dashboard_status():
 @auth.login_required
 def operator_gate(name, action):
     real_gate_name = name
-    if name == "gateA":
-        real_gate_name = config.entry_gate_name
-    elif name == "gateB":
-        real_gate_name = config.exit_gate_name
+    if name == "gateA": 
+        real_gate_name = get_gate_for_spot("ENTRY", is_entry=True)
+    elif name == "gateB": 
+        real_gate_name = get_gate_for_spot("EXIT", is_entry=False)
 
     if action in ["open", "close"]:
         if not auth.has_permission("can_control_gate"):

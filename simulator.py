@@ -26,6 +26,28 @@ def login_to_simulator():
             print(f"[AUTH ERROR] Cannot connect to simulator on port 9898: {e}")
         return False
 
+def is_zone_gate_working(spot):
+    barriers = call_simulator_api("GET", "/list-barriers")
+
+    if not isinstance(barriers, list):
+        return False
+
+    zone = spot.get("zoneParent")
+    gate_name = config.zone_gates.get(zone, {}).get("entry")
+
+    if not gate_name:
+        return False
+
+    for gate in barriers:
+        if gate.get("name") == gate_name:
+            return (
+                not gate.get("broken")
+                and not gate.get("isUnderMaintenance")
+            )
+
+    return False
+
+
 def call_simulator_api(method, endpoint, payload=None, params=None):
     """Sends authenticated HTTP requests to the simulator."""
     if not config.jwt_token and not login_to_simulator():
@@ -65,6 +87,7 @@ def safe_open_gate(gate_name):
                 break
     print(f"[GATE] Lifting barrier '{gate_name}'...")
     call_simulator_api("POST", f"/barrier-gates/{gate_name}/open")
+    
 
 def safe_close_gate(gate_name):
     print(f"[GATE] Lowering barrier '{gate_name}'...")
@@ -88,7 +111,8 @@ def allocate_parking_spot(car_type):
             and not s.get("isUnderMaintenance")
             and is_spot_empty(s)
             and s.get("name") not in config.reserved_spots
-        ]
+            and is_zone_gate_working(s)
+            ]
 
         c_type = (car_type or "Normal").strip().capitalize()
         chosen_spot = None
@@ -97,21 +121,25 @@ def allocate_parking_spot(car_type):
             for s in usable_spots:
                 if s.get("parkingForCarType", "").lower() == "electric":
                     chosen_spot = s.get("name")
+                    chosen_zone = s.get("zoneParent")
                     break
             if not chosen_spot:
                 for s in usable_spots:
                     if s.get("parkingForCarType", "").lower() == "any":
                         chosen_spot = s.get("name")
+                        chosen_zone = s.get("zoneParent")
                         break
         elif c_type in ["Accessible", "Disabled", "Handicapped"]:
             for s in usable_spots:
                 if s.get("parkingForCarType", "").lower() == "accessible":
                     chosen_spot = s.get("name")
+                    chosen_zone = s.get("zoneParent")
                     break
         else:
             for s in usable_spots:
                 if s.get("parkingForCarType", "").lower() == "any":
                     chosen_spot = s.get("name")
+                    chosen_zone = s.get("zoneParent")
                     break
 
         if chosen_spot:
@@ -151,7 +179,7 @@ def initialize_system():
                 call_simulator_api("POST", f"/barrier-gates/{b.get('name')}/repair")
 
     # Ensure exit gate is closed by default
-    safe_close_gate(config.exit_gate_name)
+    safe_close_gate("EXIT")
 
     # Sync already parked cars into reserved_spots
     spots = call_simulator_api("GET", "/list-parking-spots")
@@ -231,3 +259,13 @@ def poll_co_levels():
 
 def start_co_polling():
     threading.Thread(target=poll_co_levels, daemon=True).start()
+
+
+def get_zone_for_spot(spot_name):
+    spots = call_simulator_api("GET", "/list-parking-spots")
+
+    for spot in spots:
+        if spot.get("name") == spot_name:
+            return spot.get("zoneParent")
+
+    return None

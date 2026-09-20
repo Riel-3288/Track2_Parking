@@ -35,7 +35,18 @@ zone_fans_map = {}
 zone_fan_state = {}   # { "ZONE1": True/False } — tracks whether that zone's fans are currently ON, to avoid redundant API calls
 reserved_spots = set()    # Bays reserved by cars driving to them
 
-entry_gate_name = "gate1"
-exit_gate_name = "gate2"
-barriers = []
+zone_gates = {
+    "ZONE1": {
+        "entry": "gate1",
+        "exit": "gate2"
+    },
+    "ZONE2": {
+        "entry": "gate3",
+        "exit": "gate4"
+    },
+    "ZONE3": {
+        "entry": "gate5",
+        "exit": "gate6"
+    }
+}
 exhaust_fans = []
