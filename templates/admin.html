@@ -2,232 +2,673 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Ctrl Alt Everything - Admin Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
-        h1, h2, h3 { color: #00adb5; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; margin-bottom: 20px; }
+        /* ============ Design tokens ============ */
+        :root {
+            --bg: #0b0f14;
+            --bg-sidebar: #0e1319;
+            --bg-panel: #121821;
+            --bg-elevated: #1a222c;
+            --border: #263140;
+            --border-soft: #1c2530;
 
-        section { margin-bottom: 30px; }
+            --text: #e7edf3;
+            --text-muted: #8a97a6;
+            --text-faint: #5b6675;
 
-        button { background: #00adb5; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; margin-right: 10px; font-weight: bold; }
-        button:hover { background: #007c82; }
-        .btn-danger { background: #d9534f; }
-        .btn-danger:hover { background: #c9302c; }
-        .btn-admin { background: #8b5cf6; }
-        .btn-admin:hover { background: #6d3fd1; }
+            --accent: #2dd4bf;       /* live / operational actions */
+            --accent-dim: rgba(45, 212, 191, 0.14);
+            --admin: #a78bfa;        /* admin-restricted features */
+            --admin-dim: rgba(167, 139, 250, 0.14);
+            --danger: #f2665e;
+            --danger-dim: rgba(242, 102, 94, 0.14);
+            --warning: #f0ad4e;
+            --warning-dim: rgba(240, 173, 78, 0.14);
+            --success: #4ade80;
+            --info: #60a5fa;
 
-        table { width: 100%; border-collapse: collapse; background: #222831; border-radius: 8px; overflow: hidden; margin-top: 10px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #393e46; }
-        th { background: #2a313d; color: #00adb5; }
-        .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-        .badge-parked { background: #5bc0de; color: white; }
-        .badge-done { background: #5cb85c; color: white; }
-        .badge-admin { background: #8b5cf6; color: white; }
-        .badge-operator { background: #00adb5; color: #121212; }
-        input[type="text"], input[type="number"], input[type="password"], select {
-            padding: 6px; border-radius: 4px; background: #393e46; color: white; border: 1px solid #00adb5;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+
+            --radius: 8px;
         }
 
-        .revenue-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin: 15px 0; }
-        .stat-card { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #00adb5; }
-        .stat-val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #eeeeee; }
-        .charts-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
-        .chart-card { background: #222831; padding: 15px; border-radius: 8px; }
-        .chart-card canvas { max-height: 260px; }
+        * { box-sizing: border-box; }
 
-        .admin-panel { border-left: 5px solid #8b5cf6; padding-left: 15px; margin-top: 20px; }
-        .admin-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
-        .panel { background: #222831; padding: 15px; border-radius: 8px; border-left: 5px solid #8b5cf6; margin-bottom: 15px; }
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            font-size: 14px;
+        }
+
+        h1, h2, h3 { color: var(--text); font-weight: 600; margin: 0 0 4px; }
+        h2 { font-size: 19px; }
+        h3 { font-size: 15px; }
+        p { line-height: 1.5; }
+        code { font-family: var(--font-mono); background: var(--bg-elevated); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+        /* ============ Sidebar ============ */
+        .sidebar {
+            width: 232px;
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+        .sidebar-logo {
+            padding: 20px 20px 16px;
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: 0.2px;
+        }
+        .sidebar-logo .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-dim);
+            flex-shrink: 0;
+        }
+        .nav-group-label {
+            padding: 14px 20px 6px;
+            font-size: 11px;
+            color: var(--text-faint);
+        }
+        .sidebar-btn {
+            padding: 10px 20px;
+            margin: 1px 8px;
+            border-radius: 6px;
+            color: var(--text-muted);
+            background: none;
+            border: none;
+            border-left: none;
+            text-align: left;
+            font-family: var(--font-sans);
+            font-size: 13.5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: calc(100% - 16px);
+            transition: background 0.15s, color 0.15s;
+        }
+        .sidebar-btn:hover { background: var(--bg-elevated); color: var(--text); }
+        .sidebar-btn.active {
+            background: var(--accent-dim);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .sidebar-btn .icon { font-size: 15px; width: 18px; text-align: center; }
+        .sidebar-footer {
+            margin-top: auto;
+            border-top: 1px solid var(--border);
+            padding: 8px;
+        }
+        .sidebar-link {
+            padding: 10px 12px;
+            color: var(--danger);
+            text-decoration: none;
+            font-size: 13.5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-radius: 6px;
+            transition: background 0.15s;
+        }
+        .sidebar-link:hover { background: var(--danger-dim); }
+
+        /* ============ Main content ============ */
+        .main-content { flex: 1; padding: 24px 28px; overflow-y: auto; }
+        .tab-section { display: none; }
+        .tab-section.active { display: block; }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 16px;
+            margin-bottom: 22px;
+        }
+        .header-title { display: flex; align-items: baseline; gap: 10px; }
+        .header-title .clock { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); }
+        .header-user { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--text-muted); }
+        .header-user a { color: var(--text-muted); text-decoration: none; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); transition: 0.15s; }
+        .header-user a:hover { color: var(--text); border-color: var(--text-faint); }
+
+        section { margin-bottom: 28px; }
+        .section-intro { color: var(--text-muted); font-size: 13px; margin: -2px 0 16px; }
+
+        /* ============ Buttons ============ */
+        button {
+            background: var(--accent);
+            color: #04211d;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            font-family: var(--font-sans);
+            transition: filter 0.15s, opacity 0.15s;
+        }
+        button:hover { filter: brightness(1.08); }
+        button:active { filter: brightness(0.95); }
+        .btn-secondary { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+        .btn-secondary:hover { color: var(--text); border-color: var(--text-faint); filter: none; }
+        .btn-warning { background: var(--warning); color: #2b1d05; }
+        .btn-danger { background: var(--danger); color: #2b0906; }
+        .btn-admin { background: var(--admin); color: #1c1033; }
+
+        /* ============ Tables ============ */
+        table { width: 100%; border-collapse: collapse; background: var(--bg-panel); border: 1px solid var(--border-soft); border-radius: var(--radius); overflow: hidden; margin-top: 10px; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border-soft); }
+        th { background: var(--bg-elevated); color: var(--text-muted); font-weight: 600; font-size: 12px; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:hover { background: rgba(255,255,255,0.02); }
+        td strong { font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.3px; }
+
+        .badge { padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; display: inline-block; }
+        .badge-parked { background: rgba(96,165,250,0.16); color: var(--info); }
+        .badge-done { background: rgba(74,222,128,0.16); color: var(--success); }
+        .badge-admin { background: var(--admin-dim); color: var(--admin); }
+        .badge-operator { background: var(--accent-dim); color: var(--accent); }
+
+        input[type="text"], input[type="number"], input[type="password"], input[type="date"], select {
+            padding: 7px 10px; border-radius: 6px; background: var(--bg-elevated); color: var(--text);
+            border: 1px solid var(--border); font-family: var(--font-sans); font-size: 13px;
+        }
+        input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+        /* ============ Shared filter bar ============ */
+        .filter-container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+        .filter-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .filter-controls label { color: var(--text-muted); font-size: 12.5px; font-weight: 500; }
+
+        /* ============ Live parking ============ */
+        .stat-chips { display: flex; gap: 12px; margin: 4px 0 18px; flex-wrap: wrap; }
+        .chip {
+            background: var(--bg-panel); border: 1px solid var(--border-soft); border-radius: var(--radius);
+            padding: 10px 16px; min-width: 150px;
+        }
+        .chip-label { display: block; font-size: 11.5px; color: var(--text-muted); margin-bottom: 4px; }
+        .chip-value { font-family: var(--font-mono); font-size: 18px; font-weight: 600; color: var(--text); }
+
+        .bay-legend { display: flex; gap: 18px; margin: 4px 0 12px; font-size: 12.5px; color: var(--text-muted); }
+        .legend-item { display: flex; align-items: center; gap: 6px; }
+        .legend-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+        .legend-dot.free { background: var(--success); }
+        .legend-dot.occupied { background: var(--danger); }
+        .legend-dot.broken { background: var(--warning); }
+
+        .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin: 0 0 20px; }
+        .bay {
+            background: var(--bg-elevated); padding: 10px 6px; text-align: center; border-radius: 6px;
+            font-size: 11.5px; border: 1px solid var(--border-soft); transition: background 0.25s, border-color 0.25s;
+        }
+        .bay strong { display: block; font-family: var(--font-mono); font-size: 12px; margin-bottom: 2px; }
+        .bay.occupied { background: var(--danger-dim); border-color: rgba(242,102,94,0.35); color: #ffb3ae; }
+        .bay.free { background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.25); color: #b6f3cb; }
+        .bay.broken { background: var(--warning-dim); border-color: rgba(240,173,78,0.4); color: #ffd699; font-weight: 600; }
+
+        .controls { background: var(--bg-panel); border: 1px solid var(--border-soft); padding: 16px 18px; border-radius: var(--radius); }
+        .gate-group { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
+        .gate-group:last-of-type { margin-bottom: 0; }
+        .gate-group-label { width: 150px; flex-shrink: 0; font-size: 13px; color: var(--text-muted); font-weight: 500; }
+        .btn-row { display: flex; gap: 8px; }
+        .danger-zone { border-top: 1px dashed var(--border); margin-top: 14px; padding-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .danger-zone p { margin: 0; font-size: 12.5px; color: var(--text-muted); max-width: 420px; }
+
+        /* ============ Revenue ============ */
+        .revenue-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 4px 0 18px; }
+        .stat-card { background: var(--bg-panel); padding: 16px 18px; border-radius: var(--radius); border: 1px solid var(--border-soft); border-left: 3px solid var(--accent); }
+        .stat-card div:first-child { font-size: 12.5px; color: var(--text-muted); margin-bottom: 6px; }
+        .stat-val { font-size: 24px; font-weight: 700; font-family: var(--font-mono); color: var(--text); }
+
+        .charts-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+        #revenue-updated { font-size: 11.5px; color: var(--text-faint); font-family: var(--font-mono); }
+        #revenue-status {
+            display: none; background: var(--warning-dim); border: 1px solid rgba(240,173,78,0.35); color: #ffd699;
+            padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 14px;
+        }
+        .charts-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+        .chart-card { background: var(--bg-panel); border: 1px solid var(--border-soft); padding: 16px 18px; border-radius: var(--radius); }
+        .chart-card-head { margin-bottom: 10px; }
+        .chart-card-head h3 { margin-bottom: 2px; }
+        .chart-sub { font-size: 12px; color: var(--text-muted); }
+        .chart-body { position: relative; height: 240px; }
+        .chart-body canvas { position: absolute; inset: 0; }
+        .chart-empty {
+            position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+            text-align: center; color: var(--text-faint); font-size: 12.5px; padding: 16px; line-height: 1.5;
+        }
+
+        .panel { background: var(--bg-panel); padding: 18px 20px; border-radius: var(--radius); border: 1px solid var(--border-soft); border-left: 3px solid var(--admin); margin-bottom: 16px; }
         .panel h3 { margin-top: 0; }
+        .panel-note { font-size: 12.5px; color: var(--text-muted); margin: -2px 0 12px; }
+
+        .report-box { background: var(--bg-elevated); padding: 16px 18px; border-radius: 6px; display: none; margin-top: 14px; max-width: 460px; border: 1px solid var(--border); }
+        .report-item { display: flex; justify-content: space-between; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--border-soft); font-size: 13.5px; }
+        .report-item:last-child { border: none; margin-bottom: 0; padding-bottom: 0; }
+        .positive { color: var(--success); font-weight: 600; font-family: var(--font-mono); }
+        .negative { color: var(--danger); font-weight: 600; font-family: var(--font-mono); }
+
+        /* ============ Settings / admin grid ============ */
+        .admin-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; align-items: start; }
         .form-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
         .form-row input, .form-row select { flex: 1; min-width: 90px; }
-        .mini-table { font-size: 13px; }
-        .mini-table th, .mini-table td { padding: 6px 8px; }
-        .mini-table td button { padding: 4px 8px; margin-right: 4px; font-size: 11px; }
-        .rate-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-        .rate-row label { width: 110px; }
-        .empty-note { color: #888; font-size: 12px; padding: 8px 0; }
-
-        .live-mini-stats { display: flex; gap: 25px; margin: 10px 0 15px; font-size: 14px; }
-        .live-mini-stats strong { color: #eeeeee; }
-        .bays-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px; margin: 15px 0; }
-        .bay { background: #393e46; padding: 10px; text-align: center; border-radius: 4px; font-size: 12px; transition: background 0.3s; }
-        .bay.occupied { background: #d9534f; color: white; }
-        .bay.free { background: #5cb85c; color: white; }
-        .bay.broken { background: #f0ad4e; color: black; font-weight: bold; }
-        .controls { background: #222831; padding: 15px; border-radius: 8px; margin-top: 15px; }
-
-        .filter-container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
-        .filter-controls { display: flex; gap: 10px; align-items: center; }
-        
-        /* RBAC Report Box CSS */
-        .report-box { background: #1e1e1e; padding: 15px; border-radius: 4px; display: none; margin-top: 15px; max-width: 500px; border: 1px solid #333;}
-        .report-item { display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px dashed #333; padding-bottom: 4px;}
-        .positive { color: #5cb85c; font-weight: bold; }
-        .negative { color: #d9534f; font-weight: bold; }
+        .mini-table { font-size: 12.5px; margin-top: 8px; }
+        .mini-table th, .mini-table td { padding: 7px 10px; }
+        .mini-table td button { padding: 5px 10px; margin-right: 4px; font-size: 11.5px; }
+        .rate-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .rate-row label { width: 120px; font-size: 13px; color: var(--text-muted); text-transform: capitalize; }
+        .rate-row input { width: 100px; }
+        .empty-note { color: var(--text-faint); font-size: 12.5px; padding: 10px 0; display: none; }
+        .saved-msg { color: var(--success); font-size: 12.5px; margin-left: 10px; display: none; }
+        .export-panel .form-row { align-items: flex-end; }
+        .export-field { display: flex; flex-direction: column; gap: 4px; }
+        .export-field label { font-size: 12px; color: var(--text-muted); }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>🅿️ Ctrl Alt Everything — Command Center</h1>
-        <div style="display:flex; align-items:center; gap:15px; font-size:14px;">
-            <span>Logged in as <strong>{{ username }}</strong>
-                <span class="badge badge-admin">{{ role }}</span>
-            </span>
-            <a href="/logout" style="color:#00adb5;">Logout</a>
+
+    <!-- ================= Sidebar ================= -->
+    <div class="sidebar">
+        <div class="sidebar-logo"><span class="dot"></span> Ctrl Alt Everything</div>
+
+        <div class="nav-group-label">Operations</div>
+        <button class="sidebar-btn active" id="btn-sec-live" onclick="showSection('sec-live', 'Live Parking')"><span class="icon">🚗</span> Live Parking</button>
+        <button class="sidebar-btn" id="btn-sec-revenue" onclick="showSection('sec-revenue', 'Revenue Analysis')"><span class="icon">📈</span> Revenue Analysis</button>
+        <button class="sidebar-btn" id="btn-sec-settings" onclick="showSection('sec-settings', 'System Settings')"><span class="icon">⚙️</span> System Settings</button>
+
+        <div class="nav-group-label">Logs &amp; security</div>
+        <button class="sidebar-btn" id="btn-sec-database" onclick="showSection('sec-database', 'Database Activity')"><span class="icon">🗄️</span> Database Activity</button>
+        <button class="sidebar-btn" id="btn-sec-webhook" onclick="showSection('sec-webhook', 'Webhook Security Log')"><span class="icon">🛡️</span> Webhook Logs</button>
+        <button class="sidebar-btn" id="btn-sec-audit" onclick="showSection('sec-audit', 'Audit Log')"><span class="icon">📋</span> Audit Log</button>
+        <button class="sidebar-btn" id="btn-sec-login" onclick="showSection('sec-login', 'Login Activity')"><span class="icon">🔐</span> Login Activity</button>
+
+        <div class="sidebar-footer">
+            <a href="/penalties" class="sidebar-link"><span class="icon">⚠️</span> Penalties System</a>
         </div>
     </div>
 
-    <section>
-        <h2>🛡️ Webhook Security Log</h2>
-        <div class="filter-container" style="margin-bottom:10px;">
-            <div class="filter-controls">
-                <label for="webhook-verdict-filter"><strong>Show: </strong></label>
-                <select id="webhook-verdict-filter" onchange="fetchWebhookLogs()">
-                    <option value="All">All</option>
-                    <option value="Blocked">Blocked only</option>
-                    <option value="Verified">Verified only</option>
-                </select>
-
-                <label for="webhook-date-filter"><strong>Date: </strong></label>
-                <input type="date" id="webhook-date-filter" onchange="fetchWebhookLogs()">
-                <button onclick="clearWebhookFilters()">Clear</button>
+    <!-- ================= Main content ================= -->
+    <div class="main-content">
+        <div class="header">
+            <div class="header-title">
+                <h2 id="page-title">Live Parking</h2>
+                <span class="clock" id="live-clock"></span>
+            </div>
+            <div class="header-user">
+                <span>Logged in as <strong style="color:var(--text);">{{ username }}</strong>
+                    <span class="badge badge-{{ role|lower }}">{{ role }}</span>
+                </span>
+                <a href="/logout">Log out</a>
             </div>
         </div>
-        <table style="max-width:700px;">
-            <thead><tr><th>Time</th><th>Event</th><th>Signed?</th><th>Verdict</th><th>Source IP</th></tr></thead>
-            <tbody id="webhook-logs-tbody"></tbody>
-        </table>
-    </section>
 
-    {% if last_logins %}
-    <section>
-        <h2>🔐 Recent Login Activity (last {{ last_logins|length }})</h2>
-        <table style="max-width:600px;">
-            <thead><tr><th>Time</th><th>Result</th><th>IP</th></tr></thead>
-            <tbody>
-            {% for l in last_logins %}
-                <tr>
-                    <td>{{ l.time }}</td>
-                    <td>
-                        <span class="badge" style="background:{{ '#5cb85c' if l.success else '#d9534f' }};color:white;">
-                            {{ 'Success' if l.success else 'Failed (' ~ l.reason ~ ')' }}
-                        </span>
-                    </td>
-                    <td>{{ l.ip }}</td>
-                </tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </section>
-    {% else %}
-    <p style="color:#888;font-size:13px;">No previous login history for this account.</p>
-    {% endif %}
+        <!-- ================= Live Parking ================= -->
+        <section id="sec-live" class="tab-section active">
+            <div class="stat-chips">
+                <div class="chip"><span class="chip-label">Available spots</span><span class="chip-value" id="free-spots">-- / 30</span></div>
+                <div class="chip"><span class="chip-label">Entrance (Gate A)</span><span class="chip-value" id="gate-a">--</span></div>
+                <div class="chip"><span class="chip-label">Exit (Gate B)</span><span class="chip-value" id="gate-b">--</span></div>
+            </div>
 
-    <section class="revenue-section">
-        <h2>📈 Revenue Analysis (RBAC Protected)</h2>
-        <div class="revenue-stats">
-            <div class="stat-card"><div>Total Revenue</div><div class="stat-val" style="color:#5cb85c;" id="revenue">$0.00</div></div>
-            <div class="stat-card"><div>Total Penalties</div><div class="stat-val" style="color:#d9534f;" id="penalties">0</div></div>
-        </div>
+            <div class="bay-legend">
+                <span class="legend-item"><span class="legend-dot free"></span> Free</span>
+                <span class="legend-item"><span class="legend-dot occupied"></span> Occupied</span>
+                <span class="legend-item"><span class="legend-dot broken"></span> Under maintenance</span>
+            </div>
+            <div class="bays-grid" id="bays-container"></div>
 
-        <!-- Missing Chart Canvases added back -->
-        <div class="charts-grid" style="margin-bottom: 20px;">
-            <div class="chart-card"><canvas id="dailyChart"></canvas></div>
-            <div class="chart-card"><canvas id="monthlyChart"></canvas></div>
-        </div>
+            <div class="controls">
+                <h3 style="margin-bottom:14px;">Manual operator override</h3>
 
-        <!-- RBAC: Financial Report Generator -->
-        <div class="panel">
-            <h3>📊 Detailed Financial Report</h3>
-            <p style="font-size: 13px; color: #aaa; margin-top: -5px;">Requires <code>can_generate_reports</code> permission.</p>
-            <button class="btn-admin" onclick="generateReport()">Generate Certified Report</button>
-            
-            <div id="report-output" class="report-box">
-                <div class="report-item"><span>Parking Revenue:</span> <span id="rev-parking"></span></div>
-                <div class="report-item"><span>Charging Revenue:</span> <span id="rev-charging"></span></div>
-                <div class="report-item"><span>Gross Revenue:</span> <span id="rev-gross" class="positive"></span></div>
-                <div class="report-item"><span>Penalties Incurred:</span> <span id="rev-penalty" class="negative"></span></div>
-                <div class="report-item" style="border:none; margin-top: 10px; font-size: 1.2em;">
-                    <span>Net Profit:</span> <span id="rev-net" style="color: #00adb5; font-weight:bold;"></span>
+                <div class="gate-group">
+                    <span class="gate-group-label">Gate A — Entrance</span>
+                    <div class="btn-row">
+                        <button onclick="controlGate('gateA', 'open')">Open</button>
+                        <button onclick="controlGate('gateA', 'close')" class="btn-secondary">Close</button>
+                        <button onclick="controlGate('gateA', 'repair')" class="btn-warning">Repair</button>
+                    </div>
+                </div>
+                <div class="gate-group">
+                    <span class="gate-group-label">Gate B — Exit</span>
+                    <div class="btn-row">
+                        <button onclick="controlGate('gateB', 'open')">Open</button>
+                        <button onclick="controlGate('gateB', 'close')" class="btn-secondary">Close</button>
+                        <button onclick="controlGate('gateB', 'repair')" class="btn-warning">Repair</button>
+                    </div>
+                </div>
+
+                <div class="danger-zone">
+                    <p>Clears every recorded penalty. This can't be undone.</p>
+                    <button onclick="resetPenalties()" class="btn-danger">Reset penalties</button>
                 </div>
             </div>
-        </div>
-    </section>
+        </section>
 
-    <section class="live-section">
-        <h2>🚗 Live Parking & Manual Override</h2>
-        <div class="live-mini-stats">
-            <span>Available Spots: <strong id="free-spots">-- / 30</strong></span>
-            <span>Gate A (Entrance): <strong id="gate-a">--</strong></span>
-            <span>Gate B (Exit): <strong id="gate-b">--</strong></span>
-        </div>
+        <!-- ================= Revenue Analysis ================= -->
+        <section id="sec-revenue" class="tab-section">
+            <p class="section-intro">Requires <code>can_view_revenue</code> permission.</p>
 
-        <div class="bays-grid" id="bays-container"></div>
+            <div class="revenue-stats">
+                <div class="stat-card"><div>Total revenue</div><div class="stat-val" style="color:var(--success);" id="revenue">$0.00</div></div>
+                <div class="stat-card" style="border-left-color:var(--danger);"><div>Total penalties</div><div class="stat-val" style="color:var(--danger);" id="penalties">0</div></div>
+            </div>
 
-        <div class="controls">
-            <h3 style="margin-top:0;">Manual Operator Override</h3>
-            <button onclick="controlGate('gateA', 'open')">Open Gate A</button>
-            <button onclick="controlGate('gateA', 'close')">Close Gate A</button>
-            <button onclick="controlGate('gateA', 'repair')">Repair Gate A</button>
-            <button onclick="controlGate('gateB', 'open')">Open Gate B</button>
-            <button onclick="controlGate('gateB', 'close')">Close Gate B</button>
-            <button onclick="controlGate('gateB', 'repair')">Repair Gate B</button>
-            <button onclick="resetPenalties()" class="btn-danger" style="margin-left: 20px;">Reset Penalties</button>
-        </div>
-    </section>
+            <div id="revenue-status"></div>
 
-    <!-- Admin configuration layout is preserved -->
-    <div style="display: none;" id="hidden-admin-features">
-        <!-- These are just place holders in case your JS populates admin tables -->
-        <table class="mini-table"><tbody id="admin-bays-tbody"></tbody></table>
-        <div id="admin-bays-empty"></div>
-        <div id="pricing-rates"></div>
-        <input type="number" id="penalty-rate">
-        <span id="pricing-saved-msg" style="display:none;">Saved!</span>
-        <table class="mini-table"><tbody id="admin-staff-tbody"></tbody></table>
-        <div id="admin-staff-empty"></div>
-        <input type="text" id="new-staff-username"><input type="password" id="new-staff-password"><select id="new-staff-role"></select>
-        <input type="text" id="export-from"><input type="text" id="export-to">
+            <div class="charts-head">
+                <span></span>
+                <span id="revenue-updated"></span>
+            </div>
+            <div class="charts-grid" style="margin-bottom: 20px;">
+                <div class="chart-card">
+                    <div class="chart-card-head"><h3>Daily revenue</h3><span class="chart-sub">Last 7 days</span></div>
+                    <div class="chart-body">
+                        <canvas id="dailyChart"></canvas>
+                        <div class="chart-empty" id="dailyChart-empty">No revenue recorded for this period yet.</div>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-card-head"><h3>Monthly trend</h3><span class="chart-sub">Recent months</span></div>
+                    <div class="chart-body">
+                        <canvas id="monthlyChart"></canvas>
+                        <div class="chart-empty" id="monthlyChart-empty">No revenue recorded for this period yet.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h3>📊 Detailed financial report</h3>
+                <p class="panel-note">Requires <code>can_generate_reports</code> permission.</p>
+                <button class="btn-admin" onclick="generateReport()">Generate certified report</button>
+
+                <div id="report-output" class="report-box">
+                    <div class="report-item"><span>Parking revenue</span> <span id="rev-parking"></span></div>
+                    <div class="report-item"><span>Charging revenue</span> <span id="rev-charging"></span></div>
+                    <div class="report-item"><span>Gross revenue</span> <span id="rev-gross" class="positive"></span></div>
+                    <div class="report-item"><span>Penalties incurred</span> <span id="rev-penalty" class="negative"></span></div>
+                    <div class="report-item" style="font-size: 1.15em;">
+                        <span>Net profit</span> <span id="rev-net" style="color: var(--accent); font-weight:700; font-family:var(--font-mono);"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= System Settings (restored admin panel) ================= -->
+        <section id="sec-settings" class="tab-section">
+            <p class="section-intro">Bay upkeep, pricing, staff accounts and data export. Requires admin permissions — sections you can't access will say so.</p>
+
+            <div class="admin-grid">
+                <div class="panel">
+                    <h3>🅿️ Bay management</h3>
+                    <p class="panel-note">Mark a bay broken to pull it out of rotation, or fixed to bring it back.</p>
+                    <table class="mini-table">
+                        <thead><tr><th>Bay</th><th>Type</th><th>Status</th><th></th></tr></thead>
+                        <tbody id="admin-bays-tbody"></tbody>
+                    </table>
+                    <div class="empty-note" id="admin-bays-empty"></div>
+                </div>
+
+                <div class="panel">
+                    <h3>💲 Pricing &amp; penalty rate</h3>
+                    <p class="panel-note">Hourly rate by vehicle type, plus the flat penalty charge.</p>
+                    <div id="pricing-rates"></div>
+                    <div class="rate-row">
+                        <label>Penalty ($)</label>
+                        <input type="number" step="0.5" min="0" id="penalty-rate">
+                    </div>
+                    <button class="btn-admin" onclick="savePricing()">Save pricing</button>
+                    <span class="saved-msg" id="pricing-saved-msg">Saved</span>
+                </div>
+
+                <div class="panel">
+                    <h3>👤 Staff accounts</h3>
+                    <p class="panel-note">Add or remove operator and admin logins.</p>
+                    <table class="mini-table">
+                        <thead><tr><th>Username</th><th>Role</th><th></th></tr></thead>
+                        <tbody id="admin-staff-tbody"></tbody>
+                    </table>
+                    <div class="empty-note" id="admin-staff-empty"></div>
+                    <div class="form-row" style="margin-top:12px;">
+                        <input type="text" id="new-staff-username" placeholder="Username">
+                        <input type="password" id="new-staff-password" placeholder="Password">
+                        <select id="new-staff-role">
+                            <option value="operator">Operator</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <button class="btn-admin" onclick="addStaff()">Add staff account</button>
+                </div>
+
+                <div class="panel export-panel">
+                    <h3>⬇️ Export logs</h3>
+                    <p class="panel-note">Download parking activity for a date range as a file.</p>
+                    <div class="form-row">
+                        <div class="export-field"><label>From</label><input type="text" id="export-from" placeholder="YYYY-MM-DD"></div>
+                        <div class="export-field"><label>To</label><input type="text" id="export-to" placeholder="YYYY-MM-DD"></div>
+                        <button class="btn-admin" onclick="exportLogs()">Export</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ================= Database Section ================= -->
+        <section id="sec-database" class="tab-section">
+            <div class="filter-container" style="margin-bottom:14px;">
+                <h2 style="margin:0;">Recent activity</h2>
+                <div class="filter-controls">
+                    <input type="text" id="search-plate" placeholder="Search plate..." onkeyup="renderLogs()">
+                    <label for="date-filter">Date</label>
+                    <input type="date" id="date-filter" onchange="renderLogs()">
+                    <label for="sort-filter">Sort</label>
+                    <select id="sort-filter" onchange="renderLogs()">
+                        <option value="time_desc">Time (newest first)</option>
+                        <option value="time_asc">Time (oldest first)</option>
+                        <option value="plate_asc">Plate (A–Z)</option>
+                        <option value="plate_desc">Plate (Z–A)</option>
+                    </select>
+                    <label for="status-filter">Status</label>
+                    <select id="status-filter" onchange="renderLogs()">
+                        <option value="All">All</option>
+                        <option value="Parked">Parked</option>
+                        <option value="Completed">Completed</option>
+                    </select>
+                    <button class="btn-secondary" onclick="document.getElementById('date-filter').value=''; document.getElementById('search-plate').value=''; renderLogs();">Clear filters</button>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry time</th><th>Exit time</th><th>Total fee</th><th>Status</th></tr>
+                </thead>
+                <tbody id="logs-tbody"></tbody>
+            </table>
+        </section>
+
+        <!-- ================= Webhook Security Log ================= -->
+        <section id="sec-webhook" class="tab-section">
+            <div class="filter-container" style="margin-bottom:14px;">
+                <h2 style="margin:0;">Webhook security log</h2>
+                <div class="filter-controls">
+                    <label>Verdict</label>
+                    <select id="webhook-verdict-filter" onchange="fetchWebhookLogs()">
+                        <option value="All">All</option>
+                        <option value="Blocked">Blocked</option>
+                        <option value="Verified">Verified</option>
+                    </select>
+                    <label>Date</label>
+                    <input type="date" id="webhook-date-filter" onchange="fetchWebhookLogs()">
+                    <button class="btn-secondary" onclick="clearWebhookFilters()">Clear filters</button>
+                </div>
+            </div>
+            <table style="max-width:760px;">
+                <thead><tr><th>Time</th><th>Event</th><th>Signed?</th><th>Verdict</th><th>Source IP</th></tr></thead>
+                <tbody id="webhook-logs-tbody"></tbody>
+            </table>
+        </section>
+
+        <!-- ================= Audit Log ================= -->
+        <section id="sec-audit" class="tab-section">
+            <h2>Audit log</h2>
+            <p class="section-intro">Important actions and system events.</p>
+            <div class="filter-controls" style="margin-bottom:14px;">
+                <input type="text" id="audit-actor-action" placeholder="Filter actor/action..." onkeyup="renderAuditLogs()">
+                <input type="text" id="audit-target" placeholder="Filter target..." onkeyup="renderAuditLogs()">
+                <input type="date" id="audit-date" onchange="renderAuditLogs()">
+                <button class="btn-secondary" onclick="document.getElementById('audit-date').value=''; document.getElementById('audit-actor-action').value=''; document.getElementById('audit-target').value=''; renderAuditLogs();">Clear filters</button>
+            </div>
+            <table style="max-width:960px;">
+                <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Details</th></tr></thead>
+                <tbody id="audit-logs-tbody"></tbody>
+            </table>
+        </section>
+
+        <!-- ================= Login Activity ================= -->
+        <section id="sec-login" class="tab-section">
+            {% if last_logins %}
+            <h2>Recent login activity (last {{ last_logins|length }})</h2>
+            <table style="max-width:640px;">
+                <thead><tr><th>Time</th><th>Result</th><th>IP</th></tr></thead>
+                <tbody>
+                {% for l in last_logins %}
+                    <tr>
+                        <td>{{ l.time }}</td>
+                        <td>
+                            <span class="badge" style="background:{{ 'rgba(74,222,128,0.16)' if l.success else 'rgba(242,102,94,0.16)' }};color:{{ '#4ade80' if l.success else '#f2665e' }};">
+                                {{ 'Success' if l.success else 'Failed (' ~ l.reason ~ ')' }}
+                            </span>
+                        </td>
+                        <td>{{ l.ip }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <h2>Recent login activity</h2>
+            <p style="color:var(--text-muted);font-size:13px;">No previous login history for this account.</p>
+            {% endif %}
+        </section>
     </div>
 
-    <section class="database-section">
-        <div class="filter-container">
-            <h2>🗄️ Database — Recent Activity</h2>
-            <div class="filter-controls">
-                <input type="text" id="search-plate" placeholder="Search Plate..." onkeyup="renderLogs()">
-
-                <label for="sort-filter"><strong>Sort: </strong></label>
-                <select id="sort-filter" onchange="renderLogs()">
-                    <option value="time_desc">Time (Newest First)</option>
-                    <option value="time_asc">Time (Oldest First)</option>
-                    <option value="plate_asc">Plate (A-Z)</option>
-                    <option value="plate_desc">Plate (Z-A)</option>
-                </select>
-
-                <label for="status-filter"><strong>Status: </strong></label>
-                <select id="status-filter" onchange="renderLogs()">
-                    <option value="All">All</option>
-                    <option value="Parked">Parked</option>
-                    <option value="Completed">Completed</option>
-                </select>
-            </div>
-        </div>
-
-        <table>
-            <thead>
-                <tr><th>Plate</th><th>Type</th><th>Bay</th><th>Entry Time</th><th>Exit Time</th><th>Total Fee</th><th>Status</th></tr>
-            </thead>
-            <tbody id="logs-tbody"></tbody>
-        </table>
-    </section>
-
+    <!-- ================= Scripts ================= -->
     <script>
-        let currentLogs = [];
-        let dailyChart, monthlyChart;
+        // ---------- Sidebar tab switching ----------
+        function showSection(sectionId, title) {
+            document.querySelectorAll('.tab-section').forEach(sec => sec.classList.remove('active'));
+            document.querySelectorAll('.sidebar-btn').forEach(btn => btn.classList.remove('active'));
 
+            document.getElementById(sectionId).classList.add('active');
+            document.getElementById('btn-' + sectionId).classList.add('active');
+            document.getElementById('page-title').innerText = title;
+
+            if (sectionId === 'sec-revenue') {
+                Object.values(charts).forEach(c => c && c.resize());
+            }
+        }
+
+        function tickClock() {
+            const el = document.getElementById('live-clock');
+            if (el) el.innerText = new Date().toLocaleTimeString();
+        }
+        setInterval(tickClock, 1000);
+        tickClock();
+
+        // ---------- State ----------
+        let currentLogs = [];
+        let allAuditLogs = [];
+        let charts = {}; // canvasId -> Chart.js instance
+
+        // ---------- Webhook logs ----------
+        async function fetchWebhookLogs() {
+            const verdict = document.getElementById('webhook-verdict-filter').value;
+            const date = document.getElementById('webhook-date-filter').value;
+
+            const params = new URLSearchParams();
+            if (verdict !== 'All') params.set('verdict', verdict);
+            if (date) params.set('date', date);
+
+            const res = await fetch(`/api/admin/webhook-logs?${params.toString()}`);
+            if (!res.ok) return;
+            const data = await res.json();
+
+            const tbody = document.getElementById('webhook-logs-tbody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+
+            if (data.logs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-faint);">No matching webhook logs.</td></tr>';
+                return;
+            }
+
+            data.logs.forEach(l => {
+                const ok = (l.verdict === 'verified' || l.verdict === 'signature_present');
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${l.time}</td>
+                                <td>${l.event_class || '--'}</td>
+                                <td>${l.signed ? 'Yes' : 'No'}</td>
+                                <td><span class="badge" style="background:${ok ? 'rgba(74,222,128,0.16)' : 'rgba(242,102,94,0.16)'};color:${ok ? '#4ade80' : '#f2665e'};">${l.verdict}</span></td>
+                                <td>${l.ip}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function clearWebhookFilters() {
+            document.getElementById('webhook-verdict-filter').value = 'All';
+            document.getElementById('webhook-date-filter').value = '';
+            fetchWebhookLogs();
+        }
+
+        // ---------- Audit logs ----------
+        async function fetchAuditLogs() {
+            const res = await fetch('/api/admin/audit-logs');
+            if (!res.ok) return;
+            const data = await res.json();
+            allAuditLogs = data.logs;
+            renderAuditLogs();
+        }
+
+        function renderAuditLogs() {
+            const searchGeneral = document.getElementById('audit-actor-action').value.toLowerCase();
+            const searchTarget = document.getElementById('audit-target').value.toLowerCase();
+            const searchDate = document.getElementById('audit-date').value;
+
+            const tbody = document.getElementById('audit-logs-tbody');
+            tbody.innerHTML = '';
+
+            const filtered = allAuditLogs.filter(log => {
+                const actorAction = `${log.actor} ${log.action}`.toLowerCase();
+                const matchGeneral = actorAction.includes(searchGeneral);
+                const matchTarget = (log.target || '').toLowerCase().includes(searchTarget);
+                const matchDate = searchDate ? (log.time || '').startsWith(searchDate) : true;
+                return matchGeneral && matchTarget && matchDate;
+            });
+            filtered.forEach(l => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${l.time}</td><td>${l.actor}</td><td>${l.action}</td><td>${l.target || '--'}</td><td>${l.details || '--'}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // ---------- Live status ----------
         async function fetchStatus() {
             const res = await fetch('/api/dashboard/status');
             if (res.status === 401) { window.location.href = '/login'; return; }
@@ -254,7 +695,7 @@
                 else if (isOccupied) cls = 'bay occupied';
 
                 d.className = cls;
-                d.innerHTML = `<strong>${s.name}</strong><br>${s.parkingForCarType}`;
+                d.innerHTML = `<strong>${s.name}</strong>${s.parkingForCarType}`;
                 container.appendChild(d);
             });
 
@@ -263,19 +704,21 @@
         }
 
         function renderLogs() {
-            const filter = document.getElementById('status-filter').value;
             const searchPlate = document.getElementById('search-plate').value.toLowerCase();
+            const statusFilter = document.getElementById('status-filter').value;
             const sortMethod = document.getElementById('sort-filter').value;
-            const tbody = document.getElementById('logs-tbody');
-            tbody.innerHTML = '';
+            const dateFilter = document.getElementById('date-filter').value;
 
-            let filteredLogs = currentLogs.filter(l => {
-                const plate = (l[1] || '').toLowerCase();
-                const status = l[9];
+            let filteredLogs = currentLogs.filter(log => {
+                const plate = (log[1] || '').toLowerCase();
+                const status = log[9];
+                const entryTime = log[4] || '';
 
-                if (searchPlate && !plate.includes(searchPlate)) return false;
-                if (filter !== 'All' && status !== filter) return false;
-                return true;
+                const matchPlate = plate.includes(searchPlate);
+                const matchStatus = (statusFilter === 'All') || (status === statusFilter);
+                const matchDate = dateFilter ? entryTime.startsWith(dateFilter) : true;
+
+                return matchPlate && matchStatus && matchDate;
             });
 
             filteredLogs.sort((a, b) => {
@@ -292,6 +735,9 @@
                 }
             });
 
+            const tbody = document.getElementById('logs-tbody');
+            tbody.innerHTML = '';
+
             filteredLogs.forEach(l => {
                 const status = l[9];
                 const tr = document.createElement('tr');
@@ -307,14 +753,10 @@
             });
         }
 
-        // ==========================================
-        // RBAC API INTEGRATION
-        // ==========================================
         async function controlGate(name, action) {
             const res = await fetch(`/api/operator/gate/${name}/${action}`, { method: 'POST' });
             const data = await res.json();
-            
-            // Handle RBAC 403 Forbidden Response
+
             if (res.status === 403) {
                 alert("RBAC System Access Denied:\n" + data.message);
             } else {
@@ -325,7 +767,7 @@
         async function generateReport() {
             const res = await fetch('/api/admin/financial-report');
             const data = await res.json();
-            
+
             if (res.status === 200) {
                 document.getElementById('report-output').style.display = 'block';
                 document.getElementById('rev-parking').innerText = '$' + data.report.total_parking_revenue.toFixed(2);
@@ -350,92 +792,106 @@
             }
         }
 
-        // ==========================================
-        // Existing Functionality 
-        // ==========================================
-        async function fetchWebhookLogs() {
-            const verdict = document.getElementById('webhook-verdict-filter').value;
-            const date = document.getElementById('webhook-date-filter').value;
+        // ---------- Revenue charts: real data only, honest empty/error states ----------
+        function hexToRgba(hex, alpha) {
+            const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
 
-            const params = new URLSearchParams();
-            if (verdict !== 'All') params.set('verdict', verdict);
-            if (date) params.set('date', date);
+        function renderOrUpdateChart(canvasId, type, points, label, color) {
+            const canvas = document.getElementById(canvasId);
+            const emptyEl = document.getElementById(canvasId + '-empty');
 
-            const res = await fetch(`/api/admin/webhook-logs?${params.toString()}`);
-            if (!res.ok) return;
-            const data = await res.json();
-
-            const tbody = document.getElementById('webhook-logs-tbody');
-            if (!tbody) return;
-            tbody.innerHTML = '';
-
-            if (data.logs.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;">No matching webhook logs.</td></tr>';
+            if (!points || points.length === 0) {
+                canvas.style.display = 'none';
+                if (emptyEl) emptyEl.style.display = 'flex';
+                if (charts[canvasId]) { charts[canvasId].destroy(); charts[canvasId] = null; }
                 return;
             }
 
-            data.logs.forEach(l => {
-                const ok = (l.verdict === 'verified' || l.verdict === 'signature_present');
-                const tr = document.createElement('tr');
-                tr.innerHTML = `<td>${l.time}</td>
-                                <td>${l.event_class || '--'}</td>
-                                <td>${l.signed ? 'Yes' : 'No'}</td>
-                                <td><span class="badge" style="background:${ok ? '#5cb85c' : '#d9534f'};color:white;">${l.verdict}</span></td>
-                                <td>${l.ip}</td>`;
-                tbody.appendChild(tr);
+            canvas.style.display = 'block';
+            if (emptyEl) emptyEl.style.display = 'none';
+
+            const labels = points.map(p => p.label);
+            const values = points.map(p => p.revenue);
+
+            const axisOpts = {
+                x: { ticks: { color: '#8a97a6', font: { family: "Inter", size: 11 } }, grid: { color: '#1c2530' } },
+                y: { ticks: { color: '#8a97a6', font: { family: "Inter", size: 11 } }, grid: { color: '#1c2530' }, beginAtZero: true }
+            };
+
+            if (charts[canvasId]) charts[canvasId].destroy();
+
+            charts[canvasId] = new Chart(canvas, {
+                type: type,
+                data: {
+                    labels,
+                    datasets: [{
+                        label,
+                        data: values,
+                        backgroundColor: type === 'bar' ? color : hexToRgba(color, 0.15),
+                        borderColor: color,
+                        borderWidth: type === 'line' ? 2 : 0,
+                        fill: type === 'line',
+                        borderRadius: type === 'bar' ? 4 : 0,
+                        tension: 0.3,
+                        pointBackgroundColor: color,
+                        pointRadius: type === 'line' ? 3 : 0
+                    }]
+                },
+                options: { plugins: { legend: { display: false } }, scales: axisOpts, maintainAspectRatio: false }
             });
         }
 
-        function clearWebhookFilters() {
-            document.getElementById('webhook-verdict-filter').value = 'All';
-            document.getElementById('webhook-date-filter').value = '';
-            fetchWebhookLogs();
+        function showRevenueMessage(msg) {
+            const statusEl = document.getElementById('revenue-status');
+            if (statusEl) { statusEl.innerText = msg; statusEl.style.display = 'block'; }
+            ['dailyChart', 'monthlyChart'].forEach(id => {
+                document.getElementById(id).style.display = 'none';
+                const emptyEl = document.getElementById(id + '-empty');
+                if (emptyEl) emptyEl.style.display = 'none';
+                if (charts[id]) { charts[id].destroy(); charts[id] = null; }
+            });
         }
 
         async function fetchRevenue() {
-            const res = await fetch('/api/admin/revenue');
-            if (res.status === 401 || res.status === 403) return;
-            const data = await res.json();
+            try {
+                const res = await fetch('/api/admin/revenue');
+                if (res.status === 401 || res.status === 403) {
+                    showRevenueMessage('You do not have permission to view revenue data.');
+                    return;
+                }
+                if (!res.ok) throw new Error('Request failed with status ' + res.status);
+                const data = await res.json();
 
-            // Safe checks in case data doesn't exist yet
-            if(!data.daily || !data.monthly) return;
-
-            const dailyLabels = data.daily.map(d => d.label);
-            const dailyValues = data.daily.map(d => d.revenue);
-            const monthlyLabels = data.monthly.map(m => m.label);
-            const monthlyValues = data.monthly.map(m => m.revenue);
-
-            const axisOpts = {
-                x: { ticks: { color: '#e0e0e0' }, grid: { color: '#393e46' } },
-                y: { ticks: { color: '#e0e0e0' }, grid: { color: '#393e46' }, beginAtZero: true }
-            };
-
-            if (dailyChart) dailyChart.destroy();
-            dailyChart = new Chart(document.getElementById('dailyChart'), {
-                type: 'bar',
-                data: { labels: dailyLabels, datasets: [{ label: 'Daily Revenue ($)', data: dailyValues, backgroundColor: '#00adb5' }] },
-                options: { plugins: { legend: { display: false } }, scales: axisOpts }
-            });
-
-            if (monthlyChart) monthlyChart.destroy();
-            monthlyChart = new Chart(document.getElementById('monthlyChart'), {
-                type: 'bar',
-                data: { labels: monthlyLabels, datasets: [{ label: 'Monthly Revenue ($)', data: monthlyValues, backgroundColor: '#8b5cf6' }] },
-                options: { plugins: { legend: { display: false } }, scales: axisOpts }
-            });
+                document.getElementById('revenue-status').style.display = 'none';
+                renderOrUpdateChart('dailyChart', 'bar', data.daily, 'Daily Revenue ($)', '#2dd4bf');
+                renderOrUpdateChart('monthlyChart', 'line', data.monthly, 'Monthly Revenue ($)', '#a78bfa');
+                document.getElementById('revenue-updated').innerText = 'Updated ' + new Date().toLocaleTimeString();
+            } catch (err) {
+                showRevenueMessage('Could not load revenue data right now. Retrying shortly.');
+            }
         }
 
+        // ---------- Settings: bay management ----------
         async function fetchBaysAdmin() {
             const res = await fetch('/api/admin/bays');
-            if (res.status === 401 || res.status === 403) return;
-            const data = await res.json();
             const tbody = document.getElementById('admin-bays-tbody');
             const empty = document.getElementById('admin-bays-empty');
-            if(!tbody) return;
-            
+            if (!tbody) return;
+
+            if (res.status === 401 || res.status === 403) {
+                tbody.innerHTML = '';
+                empty.textContent = "You don't have permission to manage bays.";
+                empty.style.display = 'block';
+                return;
+            }
+            if (!res.ok) return;
+            const data = await res.json();
             tbody.innerHTML = '';
 
             if (!data.bays || data.bays.length === 0) {
+                empty.textContent = 'No bays configured yet.';
                 empty.style.display = 'block';
                 return;
             }
@@ -445,8 +901,8 @@
                 const tr = document.createElement('tr');
                 tr.innerHTML = `<td><strong>${b.name}</strong></td>
                                 <td>${b.type}</td>
-                                <td>${b.broken ? '<span class="badge" style="background:#f0ad4e;color:black;">Under maintenance</span>' : '<span class="badge badge-done">OK</span>'}</td>
-                                <td><button class="btn-admin" onclick="toggleBroken('${b.name}')">${b.broken ? 'Mark Fixed' : 'Mark Broken'}</button></td>`;
+                                <td>${b.broken ? '<span class="badge" style="background:rgba(240,173,78,0.16);color:#f0ad4e;">Under maintenance</span>' : '<span class="badge badge-done">OK</span>'}</td>
+                                <td><button class="btn-admin" onclick="toggleBroken('${b.name}')">${b.broken ? 'Mark fixed' : 'Mark broken'}</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -456,12 +912,18 @@
             fetchBaysAdmin();
         }
 
+        // ---------- Settings: pricing ----------
         async function fetchPricing() {
             const res = await fetch('/api/admin/pricing');
-            if (res.status === 401 || res.status === 403) return;
-            const data = await res.json();
             const container = document.getElementById('pricing-rates');
-            if(!container) return;
+            if (!container) return;
+
+            if (res.status === 401 || res.status === 403) {
+                container.innerHTML = '<div class="empty-note" style="display:block;">You don\'t have permission to view pricing.</div>';
+                return;
+            }
+            if (!res.ok) return;
+            const data = await res.json();
             container.innerHTML = '';
 
             const rates = data.rates || {};
@@ -483,28 +945,41 @@
             });
             const penalty = parseFloat(document.getElementById('penalty-rate').value) || 0;
 
-            await fetch('/api/admin/pricing', {
+            const res = await fetch('/api/admin/pricing', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ rates, penalty })
             });
+
+            if (res.status === 401 || res.status === 403) {
+                alert("RBAC System Access Denied:\nYou don't have permission to change pricing.");
+                return;
+            }
 
             const msg = document.getElementById('pricing-saved-msg');
             msg.style.display = 'inline';
             setTimeout(() => { msg.style.display = 'none'; }, 2000);
         }
 
+        // ---------- Settings: staff ----------
         async function fetchStaff() {
             const res = await fetch('/api/admin/staff');
-            if (res.status === 401 || res.status === 403) return;
-            const data = await res.json();
             const tbody = document.getElementById('admin-staff-tbody');
             const empty = document.getElementById('admin-staff-empty');
-            if(!tbody) return;
-            
+            if (!tbody) return;
+
+            if (res.status === 401 || res.status === 403) {
+                tbody.innerHTML = '';
+                empty.textContent = "You don't have permission to manage staff accounts.";
+                empty.style.display = 'block';
+                return;
+            }
+            if (!res.ok) return;
+            const data = await res.json();
             tbody.innerHTML = '';
 
             if (!data.staff || data.staff.length === 0) {
+                empty.textContent = 'No staff accounts yet.';
                 empty.style.display = 'block';
                 return;
             }
@@ -546,6 +1021,7 @@
             fetchStaff();
         }
 
+        // ---------- Settings: export ----------
         function exportLogs() {
             const from = document.getElementById('export-from').value.trim();
             const to = document.getElementById('export-to').value.trim();
@@ -556,8 +1032,12 @@
             window.location.href = `/api/admin/export/logs${qs ? '?' + qs : ''}`;
         }
 
+        // ---------- Init ----------
         setInterval(fetchStatus, 1500);
+        setInterval(fetchAuditLogs, 3000);
         setInterval(fetchRevenue, 30000);
+
+        fetchWebhookLogs();
         fetchStatus();
         fetchRevenue();
         fetchBaysAdmin();

@@ -41,6 +41,21 @@ def init_db():
         attempt_time TEXT
     )''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor TEXT,
+        action TEXT,
+        target TEXT,
+        details TEXT,
+        logged_at TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS penalty_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reason TEXT,
+        fine_amount REAL,
+        timestamp TEXT
+    )''')  
+
     conn.commit()
     conn.close()
 
@@ -135,3 +150,30 @@ def get_recent_webhook_logs(limit=50, verdict_filter="All", date_filter=None):
     conn.close()
     return [{"event_class": r[0], "signed": bool(r[1]), "verdict": r[2], "ip": r[3], "time": r[4]} for r in rows]
 
+
+def log_audit(actor, action, target="", details=""):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO audit_logs (actor, action, target, details, logged_at) VALUES (?,?,?,?,?)",
+        (actor, action, target, details, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    conn.commit()
+    conn.close()
+
+def get_audit_logs(limit=200):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT actor, action, target, details, logged_at FROM audit_logs ORDER BY id DESC LIMIT ?", (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return [{"actor": r[0], "action": r[1], "target": r[2], "details": r[3], "time": r[4]} for r in rows]
+
+def get_all_penalties(limit=300):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    # Change logged_at to timestamp
+    c.execute("SELECT id, reason, fine_amount, timestamp FROM penalty_logs ORDER BY id DESC LIMIT ?", (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return [{"id": r[0], "reason": r[1], "amount": r[2], "time": r[3]} for r in rows]

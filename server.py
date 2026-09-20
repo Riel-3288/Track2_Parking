@@ -198,18 +198,31 @@ def webhook_listener():
         c_name = data.get("Name")
         if c_type == "BarrierGate":
             simulator.call_simulator_api("POST", f"/barrier-gates/{c_name}/repair")
+            database.log_audit("system (webhook)", "auto_repair", c_name, f"type={c_type}")
         elif c_type in ["Parking", "ParkingSpot"]:
             spots = simulator.call_simulator_api("GET", "/list-parking-spots") or []
             is_empty = any(s.get("name") == c_name and simulator.is_spot_empty(s) for s in spots)
             if is_empty:
                 simulator.call_simulator_api("POST", f"/parking-spots/{c_name}/repair")
+                database.log_audit("system (webhook)", "auto_repair", c_name, f"type={c_type}")
         elif c_type == "ExhaustFan":
             simulator.call_simulator_api("POST", f"/exhaust-fans/{c_name}/repair")
-        # --- Level 2 Auto-repair additions ---
+            database.log_audit("system (webhook)", "auto_repair", c_name, f"type={c_type}")
         elif c_type == "Light":
             simulator.call_simulator_api("POST", f"/lights/{c_name}/repair")
+            database.log_audit("system (webhook)", "auto_repair", c_name, f"type={c_type}")
         elif c_type == "Display":
             simulator.call_simulator_api("POST", f"/displays/{c_name}/repair")
+            database.log_audit("system (webhook)", "auto_repair", c_name, f"type={c_type}")
+        elif event_class == "component_fixed":
+            c_type = data.get("Type")
+            c_name = data.get("Name")
+            repair_cost = data.get("RepairCost")
+            database.log_audit("system (webhook)", "component_fixed", c_name, f"type={c_type}, cost={repair_cost}")
+        elif event_class == "carbon_monoxide_event":
+            danger_level = data.get("DangerLevel")
+            database.log_audit("system (webhook)", "co_alert", "exhaust_fans", f"danger_level={danger_level}")
+            simulator.handle_carbon_monoxide_event(danger_level)
 
     # 4. Carbon Monoxide safety
     elif event_class == "carbon_monoxide_event":
@@ -317,6 +330,27 @@ def admin_dashboard():
 # ==============================================================================
 # API ENDPOINTS FOR DASHBOARD (PROTECTED)
 # ==============================================================================
+@app.route("/api/admin/audit-logs", methods=["GET"])
+@auth.admin_required
+def audit_logs_api():
+    return jsonify({"logs": database.get_audit_logs(200)})
+
+
+@app.route("/penalties", methods=["GET"])
+@auth.login_required
+def penalties_page():
+    return render_template(
+        "penalties.html",
+        username=session.get("username"),
+        role=session.get("role")
+    )
+
+@app.route("/api/penalties", methods=["GET"])
+@auth.login_required
+def api_penalties():
+    return jsonify({"penalties": database.get_all_penalties(300)})
+
+
 @app.route("/api/dashboard/status", methods=["GET"])
 @auth.login_required
 def dashboard_status():
@@ -372,38 +406,43 @@ def dashboard_status():
 @app.route("/api/operator/gate/<name>/<action>", methods=["POST"])
 @auth.login_required
 def operator_gate(name, action):
-    # --- Map frontend gate names to actual gate names ---
     real_gate_name = name
-    if name == "gateA": 
+    if name == "gateA":
         real_gate_name = config.entry_gate_name
-    elif name == "gateB": 
+    elif name == "gateB":
         real_gate_name = config.exit_gate_name
 
-    # RBAC: Check if the user has permission to control gates
     if action in ["open", "close"]:
         if not auth.has_permission("can_control_gate"):
             return jsonify({"status": "error", "message": "No permission to control gates"}), 403
-            
+
         if action == "open": simulator.safe_open_gate(real_gate_name)
         elif action == "close": simulator.safe_close_gate(real_gate_name)
-        
+        database.log_audit(session.get("username"), f"gate_{action}", real_gate_name)
+
     elif action == "repair":
         if not auth.has_permission("can_repair"):
             return jsonify({"status": "error", "message": "Only authorized technicians (Admin) can perform repairs."}), 403
-            
+
         simulator.call_simulator_api("POST", f"/barrier-gates/{real_gate_name}/repair")
-        
+        database.log_audit(session.get("username"), "gate_repair", real_gate_name)
+    else:
+        return jsonify({"status": "error", "message": "Unknown action"}), 400
+
     return jsonify({"status": "ok"})
 
 @app.route("/api/operator/penalties/reset", methods=["POST"])
 @auth.permission_required("can_reset_penalties") # only admins can reset penalties
-
 def operator_reset_penalties():
     conn = sqlite3.connect(config.DB_FILE)
     c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM penalty_logs")
+    count = c.fetchone()[0]
     c.execute("DELETE FROM penalty_logs")
     conn.commit()
     conn.close()
+
+    database.log_audit(session.get("username"), "reset_penalties", "penalty_logs", f"cleared {count} record(s)")
     return jsonify({"status": "ok"})
 
 # Financial report endpoint for admins

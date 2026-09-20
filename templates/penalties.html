@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Ctrl Alt Everything - Penalties</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        h1, h2 { color: #00adb5; }
+        a { color: #00adb5; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #393e46; padding-bottom: 15px; margin-bottom: 20px; }
+
+        table { width: 100%; border-collapse: collapse; background: #222831; border-radius: 8px; overflow: hidden; margin-top: 10px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #393e46; }
+        th { background: #2a313d; color: #00adb5; }
+
+        .stats-row { display: flex; gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: #222831; padding: 15px 20px; border-radius: 8px; border-left: 5px solid #d9534f; }
+        .stat-val { font-size: 24px; font-weight: bold; margin-top: 5px; color: #eeeeee; }
+
+        input[type="text"] {
+            padding: 6px; border-radius: 4px; background: #393e46; color: white; border: 1px solid #00adb5;
+            margin-bottom: 15px; width: 260px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚨 Penalties — Mistakes & Violations Log</h1>
+        <div style="display:flex; align-items:center; gap:15px; font-size:14px;">
+            <a href="{{ '/admin' if role == 'admin' else '/operator' }}">← Back to Dashboard</a>
+            <span>Logged in as <strong>{{ username }}</strong></span>
+            <a href="/logout">Logout</a>
+        </div>
+    </div>
+
+    <div class="stats-row">
+        <div class="stat-card">
+            <div>Total Incidents</div>
+            <div class="stat-val" id="penalty-count">--</div>
+        </div>
+        <div class="stat-card">
+            <div>Total Fines</div>
+            <div class="stat-val" id="penalty-total" style="color:#d9534f;">--</div>
+        </div>
+    </div>
+
+    <style>
+        input[type="text"], input[type="date"], select {
+            padding: 6px; border-radius: 4px; background: #393e46; color: white; border: 1px solid #00adb5;
+        }
+        .filters { display: flex; gap: 15px; margin-bottom: 15px; align-items: center; }
+    </style>
+
+    <div class="filters">
+        <input type="text" id="search-reason" placeholder="Search by reason..." onkeyup="renderPenalties()" style="width: 260px;">
+        <label for="search-date"><strong>Date:</strong></label>
+        <input type="date" id="search-date" onchange="renderPenalties()">
+        <button onclick="document.getElementById('search-date').value=''; renderPenalties();" style="padding: 6px; background:#d9534f; color:white; border:none; border-radius:4px; cursor:pointer;">Clear Date</button>
+    </div>
+
+    <table>
+        <thead><tr><th>#</th><th>Reason</th><th>Fine Amount</th><th>Recorded At</th></tr></thead>
+        <tbody id="penalties-tbody"></tbody>
+    </table>
+
+    <script>
+        let allPenalties = [];
+
+        async function fetchPenalties() {
+            const res = await fetch('/api/penalties');
+            if (res.status === 401) { window.location.href = '/login'; return; }
+            if (!res.ok) return;
+            const data = await res.json();
+            allPenalties = data.penalties || [];
+
+            const total = allPenalties.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+            document.getElementById('penalty-count').innerText = allPenalties.length;
+            document.getElementById('penalty-total').innerText = `-$${total.toFixed(2)}`;
+
+            renderPenalties();
+        }
+
+        function renderPenalties() {
+            const searchReason = document.getElementById('search-reason').value.toLowerCase();
+            const searchDate = document.getElementById('search-date').value; 
+            const tbody = document.getElementById('penalties-tbody');
+            tbody.innerHTML = '';
+
+            const filtered = allPenalties.filter(p => {
+                const matchReason = (p.reason || '').toLowerCase().includes(searchReason);
+                const matchDate = searchDate ? (p.time || '').startsWith(searchDate) : true; 
+                
+                return matchReason && matchDate;
+            });
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#888;">No penalty records found.</td></tr>';
+                return;
+            }
+
+            filtered.forEach(p => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${p.id}</td>
+                                <td>${p.reason}</td>
+                                <td>$${Number(p.amount).toFixed(2)}</td>
+                                <td>${p.time || '--'}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        setInterval(fetchPenalties, 3000);
+        fetchPenalties();
+    </script>
+</body>
+</html>
