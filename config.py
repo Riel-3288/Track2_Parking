@@ -25,7 +25,19 @@ processed_event_ids = set()
 active_cars = {}          # { plate: { "spot": str, "type": str, "duration": int, "expected_cost": float, "charged": bool } }
 reserved_spots = set()    # Bays reserved by cars driving to them
 
-entry_gate_name = "gate1"
-exit_gate_name = "gate2"
+zone_gates = {
+    "ZONE1": {
+        "entry": "gate1",
+        "exit": "gate2"
+    },
+    "ZONE2": {
+        "entry": "gate3",
+        "exit": "gate4"
+    },
+    "ZONE3": {
+        "entry": "gate5",
+        "exit": "gate6"
+    }
+}
 exhaust_fans = []
 co_danger_level = "Safe"   # tracks latest CO2 danger reading

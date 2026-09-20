@@ -96,3 +96,21 @@ def log_penalty(reason, fine):
               (reason, fine))
     conn.commit()
     conn.close()
+
+
+def get_car_spot(plate):
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+
+    c.execute('''
+        SELECT spot_name
+        FROM car_logs
+        WHERE plate = ?
+        ORDER BY id DESC
+        LIMIT 1
+    ''', (plate.strip(),))
+
+    row = c.fetchone()
+    conn.close()
+
+    return row[0] if row else None
