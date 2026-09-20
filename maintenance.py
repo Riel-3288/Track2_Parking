@@ -1230,18 +1230,31 @@ def dashboard_status():
 # ==============================================================================
 # MAIN ENTRYPOINT
 # ==============================================================================
+# ==============================================================================
+# MAIN ENTRYPOINT & STARTUP SEQUENCE
+# ==============================================================================
 if __name__ == "__main__":
-    init_db()
-    threading.Thread(target=initialize_system, daemon=True).start()
-    threading.Thread(target=preventive_maintenance_loop, daemon=True).start()
-    threading.Thread(target=master_gate_watchdog, daemon=True).start()
+    # Step 1: Initialize Database Tables (car_logs, penalty_logs, maintenance_logs, audit_logs)
+    database.init_db()
 
-    print("=" * 85)
-    print("  CAR PARK MANAGEMENT SYSTEM - LEVEL 2")
-    print("  Cascading Diversion: Zone 1 -> Zone 2 (Fallback Zone 3)")
-    print("  Persistent Queue Handshake | Zero Stacking at Entry 1")
-    print(f"  Gate Threshold: {MAINTENANCE_THRESHOLDS['gate_cycles']} Operations")
-    print("  http://127.0.0.1:5000")
-    print("=" * 85)
+    # Step 2: Live Hardware Synchronization (JWT Login, Gate 7 Check, Initial Spot Sync)
+    simulator.initialize_system()
 
+    # Step 3: Start Background Automation Threads
+    simulator.start_co_polling()              # Monitors CO gas levels continuously
+    simulator.start_preventive_maintenance()  # Level 2 auto-maintenance scheduler
+    simulator.start_master_gate_watchdog()    # Gate 7 and unjam supervisor
+
+    # Step 4: Set Initial Environmental Baseline
+    for zone in getattr(config, "STATIC_ZONE_FANS", {}):
+        simulator.handle_carbon_monoxide_event("Safe", 0, zone)
+
+    print("=" * 70)
+    print("  CAR PARK MANAGEMENT SYSTEM (CTRL ALT EVERYTHING)")
+    print("  Status: All Background Supervisors & API Endpoints Active")
+    print("  Dashboard UI: http://127.0.0.1:5000")
+    print("  Webhook Receiver: http://127.0.0.1:5000/webhook")
+    print("=" * 70)
+
+    # Step 5: Start Flask Web Server
     app.run(host="0.0.0.0", port=5000, debug=False)
