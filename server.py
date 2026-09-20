@@ -2,13 +2,15 @@ import time
 import threading
 import sqlite3
 import re
+import math
+import json
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for
+
 import config
 import auth
 import database
 import simulator
-import math
-import json
 
 app = Flask(__name__)
 app.secret_key = "ctrl_alt_everything_super_secret_key" 
@@ -162,28 +164,20 @@ def webhook_listener():
 
         # B. Cleared entry box -> Delay close
         elif spot_type == "EntrySpot" and direction == "CarOut":
-
-
             target_gate = get_gate_for_spot(database.get_car_spot(raw_plate), is_entry=True)
             simulator.delayed_close_gate(target_gate, delay_seconds=3.0)
 
         # C1. Car physically enters parking bay -> Capture exact planned stay if updated!
         elif spot_type == "Park" and direction == "CarIn":
-
                 car_info = config.active_cars.setdefault(raw_plate, {})
-
                 # Start actual parking timer when car completely enters the parking bay
                 car_info["parking_start_time"] = time.time()
-
                 print(f"[PARK DOCKED] '{raw_plate}' parked in '{spot_name}'. Simulator stay duration: {planned_duration} mins.")
 
         # C2. Finished parking & leaves bay -> Direct to EXIT & release reservation
         elif spot_type == "Park" and direction == "CarOut":
-
             car_info = config.active_cars.get(raw_plate, {})
-
             start_time = car_info.get("parking_start_time")
-
             if start_time:
                 parking_seconds = time.time() - start_time
                 parking_minutes = parking_seconds / 60
@@ -252,7 +246,6 @@ def webhook_listener():
 
         database.log_car_exit(car_plate, p_cost, c_cost, amount)
 
-        # 取出刚才存下的真实 Exit Gate
         target_gate = car_info.get("exit_gate", get_gate_for_spot(database.get_car_spot(car_plate), is_entry=False))
         print(f"\n[PAYMENT VERIFIED] Car '{car_plate}' paid ${amount}. Lifting '{target_gate}'...")
         simulator.safe_open_gate(target_gate)
@@ -304,7 +297,7 @@ def webhook_listener():
             data.get("DangerLevel"),
             data.get("CarbonMonoxideLevel"),
             data.get("ZoneName")
-    )
+        )
 
     # 5. Log Penalties
     elif event_class == "penalty":
@@ -336,7 +329,6 @@ def login():
                 database.log_login_attempt(username, True, ip, "login_success")
                 session["username"] = username
                 session["role"] = user["role"]
-                # 不再需要 session["last_logins"] = history 这一行，删掉即可
 
                 if user["role"] == "admin":
                     return redirect(url_for("admin_dashboard"))
@@ -409,7 +401,6 @@ def admin_dashboard():
 def audit_logs_api():
     return jsonify({"logs": database.get_audit_logs(200)})
 
-
 @app.route("/penalties", methods=["GET"])
 @auth.login_required
 def penalties_page():
@@ -423,7 +414,6 @@ def penalties_page():
 @auth.login_required
 def api_penalties():
     return jsonify({"penalties": database.get_all_penalties(300)})
-
 
 @app.route("/api/dashboard/status", methods=["GET"])
 @auth.login_required
@@ -506,7 +496,7 @@ def operator_gate(name, action):
     return jsonify({"status": "ok"})
 
 @app.route("/api/operator/penalties/reset", methods=["POST"])
-@auth.permission_required("can_reset_penalties") # only admins can reset penalties
+@auth.permission_required("can_reset_penalties") 
 def operator_reset_penalties():
     conn = sqlite3.connect(config.DB_FILE)
     c = conn.cursor()
@@ -519,13 +509,11 @@ def operator_reset_penalties():
     database.log_audit(session.get("username"), "reset_penalties", "penalty_logs", f"cleared {count} record(s)")
     return jsonify({"status": "ok"})
 
-# Financial report endpoint for admins
 @app.route("/api/admin/financial-report", methods=["GET"])
 @auth.permission_required("can_generate_reports")
 def generate_financial_report():
     conn = sqlite3.connect(config.DB_FILE)
     c = conn.cursor()
-    # Calculate total revenue from completed car logs
     c.execute("SELECT SUM(parking_cost), SUM(charging_cost), SUM(total_paid) FROM car_logs WHERE status = 'Completed'")
     rev_row = c.fetchone()
     
@@ -544,14 +532,159 @@ def generate_financial_report():
         }
     })
 
-# Login attempt history API for admins
 @app.route("/api/admin/webhook-logs", methods=["GET"])
 @auth.admin_required
 def webhook_logs_api():
     verdict_filter = request.args.get("verdict", "All")
-    date_filter = request.args.get("date")   # 格式 "YYYY-MM-DD"，前端 date input 原生就是这个格式
+    date_filter = request.args.get("date")  
     logs = database.get_recent_webhook_logs(limit=50, verdict_filter=verdict_filter, date_filter=date_filter)
     return jsonify({"logs": logs})
+
+# ==============================================================================
+# REVENUE CHARTS API (Handles sparse data / empty days)
+# ==============================================================================
+@app.route("/api/admin/revenue", methods=["GET"])
+@auth.login_required
+def api_revenue_data():
+    """为图表提供数据：自动生成最近7天和最近6个月的框架，没有数据的日期自动补 0"""
+    conn = sqlite3.connect(config.DB_FILE)
+    c = conn.cursor()
+    
+    # 提取所有已完成的停车记录
+    c.execute("SELECT exit_time, total_paid FROM car_logs WHERE status = 'Completed' AND exit_time IS NOT NULL")
+    rows = c.fetchall()
+    conn.close()
+
+    daily_totals = {}
+    monthly_totals = {}
+    
+    # 遍历所有记录，按“日”和“月”进行累加计算
+    for exit_time_str, total_paid in rows:
+        try:
+            # 解析时间字符串，假设格式类似 "2026-09-20 14:30:00"
+            dt = datetime.strptime(exit_time_str[:19], "%Y-%m-%d %H:%M:%S")
+            day_key = dt.strftime("%Y-%m-%d")
+            month_key = dt.strftime("%Y-%m")
+            
+            daily_totals[day_key] = daily_totals.get(day_key, 0.0) + float(total_paid or 0)
+            monthly_totals[month_key] = monthly_totals.get(month_key, 0.0) + float(total_paid or 0)
+        except Exception as e:
+            pass # 如果时间格式不对就跳过
+
+    # 构造最近 7 天的数据（即使有些天没数据也会填入 0）
+    today = datetime.now()
+    daily_data = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        day_key = d.strftime("%Y-%m-%d")
+        display_label = d.strftime("%a") # 生成周几的缩写，如 Mon, Tue
+        daily_data.append({
+            "label": display_label,
+            "revenue": round(daily_totals.get(day_key, 0.0), 2)
+        })
+
+    # 构造最近 6 个月的数据（即使前面几个月没数据也会填入 0）
+    monthly_data = []
+    for i in range(5, -1, -1):
+        m = today.replace(day=1) # 拿到当前月的第一天
+        for _ in range(i):
+            m = (m - timedelta(days=1)).replace(day=1) # 逐月往前推
+            
+        month_key = m.strftime("%Y-%m")
+        display_label = m.strftime("%b") # 生成月份缩写，如 Jan, Feb
+        monthly_data.append({
+            "label": display_label,
+            "revenue": round(monthly_totals.get(month_key, 0.0), 2)
+        })
+
+    return jsonify({
+        "daily": daily_data,
+        "monthly": monthly_data
+    })
+
+
+# ==============================================================================
+# COMPONENT TRACKER API
+# ==============================================================================
+@app.route("/api/admin/components", methods=["GET"])
+@auth.login_required
+def get_all_components_status():
+    """实时向 Simulator 查询所有设备的状态，按类型分组返回"""
+    data = {
+        "BarrierGate": [],
+        "ParkingSpot": [],
+        "ExhaustFan": [],
+        "Light": [],
+        "Display": []
+    }
+    
+    # 1. 检查 Barrier Gates
+    barriers = simulator.call_simulator_api("GET", "/list-barriers") or []
+    for b in barriers:
+        data["BarrierGate"].append({
+            "name": b.get("name"), 
+            "broken": b.get("broken") or b.get("isUnderMaintenance")
+        })
+
+    # 2. 检查 Parking Spots
+    spots = simulator.call_simulator_api("GET", "/list-parking-spots") or []
+    for s in spots:
+        data["ParkingSpot"].append({
+            "name": s.get("name"), 
+            "broken": s.get("broken")
+        })
+
+    # 3. 检查 Exhaust Fans
+    fans = simulator.call_simulator_api("GET", "/list-exhaust-fans") or []
+    for f in fans:
+        data["ExhaustFan"].append({
+            "name": f.get("name"), 
+            "broken": f.get("broken")
+        })
+
+    # 4. 检查 Lights
+    lights = simulator.call_simulator_api("GET", "/list-lights") or []
+    for l in lights:
+        data["Light"].append({
+            "name": l.get("name"), 
+            "broken": l.get("broken")
+        })
+
+    # 5. 检查 Displays
+    displays = simulator.call_simulator_api("GET", "/list-displays") or []
+    for d in displays:
+        data["Display"].append({
+            "name": d.get("name"), 
+            "broken": d.get("broken")
+        })
+
+    return jsonify({"components_by_type": data})
+
+@app.route("/api/operator/components/repair", methods=["POST"])
+@auth.login_required
+def repair_component_api():
+    """接收前端的一键修复请求，并发送给 Simulator"""
+    data = request.json
+    c_name = data.get("name")
+    c_type = data.get("type")
+
+    endpoints_map = {
+        "BarrierGate": "barrier-gates",
+        "ParkingSpot": "parking-spots",
+        "Parking": "parking-spots",
+        "ExhaustFan": "exhaust-fans",
+        "Light": "lights",
+        "Display": "displays"
+    }
+
+    sim_endpoint = endpoints_map.get(c_type)
+    if sim_endpoint:
+        simulator.call_simulator_api("POST", f"/{sim_endpoint}/{c_name}/repair")
+        database.log_audit(session.get("username"), "manual_repair", c_name, f"type={c_type}")
+        return jsonify({"status": "ok"})
+    
+    return jsonify({"status": "error", "message": "Unknown component type"}), 400
+
 
 # ==============================================================================
 # MAIN ENTRYPOINT

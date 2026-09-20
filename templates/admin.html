@@ -268,21 +268,66 @@
         .positive { color: var(--success); font-weight: 600; font-family: var(--font-mono); }
         .negative { color: var(--danger); font-weight: 600; font-family: var(--font-mono); }
 
-        /* ============ Settings / admin grid ============ */
-        .admin-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; align-items: start; }
-        .form-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
-        .form-row input, .form-row select { flex: 1; min-width: 90px; }
-        .mini-table { font-size: 12.5px; margin-top: 8px; }
-        .mini-table th, .mini-table td { padding: 7px 10px; }
-        .mini-table td button { padding: 5px 10px; margin-right: 4px; font-size: 11.5px; }
-        .rate-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-        .rate-row label { width: 120px; font-size: 13px; color: var(--text-muted); text-transform: capitalize; }
-        .rate-row input { width: 100px; }
-        .empty-note { color: var(--text-faint); font-size: 12.5px; padding: 10px 0; display: none; }
-        .saved-msg { color: var(--success); font-size: 12.5px; margin-left: 10px; display: none; }
-        .export-panel .form-row { align-items: flex-end; }
-        .export-field { display: flex; flex-direction: column; gap: 4px; }
-        .export-field label { font-size: 12px; color: var(--text-muted); }
+        /* ============ Component Grid ============ */
+        .component-group { 
+            margin-bottom: 24px; 
+            background: var(--bg-panel); 
+            padding: 16px 18px; 
+            border-radius: var(--radius); 
+            border: 1px solid var(--border-soft); 
+        }
+        .component-group h3 { 
+            margin-bottom: 12px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+        }
+        .comp-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); 
+            gap: 10px; 
+        }
+        .comp-item {
+            background: var(--bg-elevated); 
+            padding: 12px 6px; 
+            text-align: center; 
+            border-radius: 6px;
+            font-size: 11.5px; 
+            border: 1px solid var(--border-soft); 
+            transition: all 0.2s ease;
+        }
+        .comp-item strong { 
+            display: block; 
+            font-family: var(--font-mono); 
+            font-size: 13px; 
+            margin-bottom: 4px; 
+        }
+        .comp-item.working { 
+            background: rgba(74,222,128,0.05); 
+            border-color: rgba(74,222,128,0.2); 
+            color: #b6f3cb; 
+        }
+        .comp-item.broken { 
+            background: var(--warning-dim); 
+            border-color: rgba(240,173,78,0.5); 
+            color: #ffd699; 
+            cursor: pointer; 
+        }
+        .comp-item.broken:hover { 
+            filter: brightness(1.1); 
+            transform: translateY(-2px); 
+            box-shadow: 0 4px 12px rgba(240,173,78,0.15); 
+        }
+        .repair-btn { 
+            font-size: 10px; 
+            font-weight: 700; 
+            background: var(--warning); 
+            color: #2b1d05; 
+            padding: 2px 6px; 
+            border-radius: 4px; 
+            display: inline-block; 
+            margin-top: 4px;
+        }
     </style>
 </head>
 <body>
@@ -294,7 +339,7 @@
         <div class="nav-group-label">Operations</div>
         <button class="sidebar-btn active" id="btn-sec-live" onclick="showSection('sec-live', 'Live Parking')"><span class="icon">🚗</span> Live Parking</button>
         <button class="sidebar-btn" id="btn-sec-revenue" onclick="showSection('sec-revenue', 'Revenue Analysis')"><span class="icon">📈</span> Revenue Analysis</button>
-        <button class="sidebar-btn" id="btn-sec-settings" onclick="showSection('sec-settings', 'System Settings')"><span class="icon">⚙️</span> System Settings</button>
+        <button class="sidebar-btn" id="btn-sec-components" onclick="showSection('sec-components', 'Component Tracker')"><span class="icon">🔧</span> Component Tracker</button>
 
         <div class="nav-group-label">Logs &amp; security</div>
         <button class="sidebar-btn" id="btn-sec-database" onclick="showSection('sec-database', 'Database Activity')"><span class="icon">🗄️</span> Database Activity</button>
@@ -413,61 +458,11 @@
             </div>
         </section>
 
-        <!-- ================= System Settings (restored admin panel) ================= -->
-        <section id="sec-settings" class="tab-section">
-            <p class="section-intro">Bay upkeep, pricing, staff accounts and data export. Requires admin permissions — sections you can't access will say so.</p>
-
-            <div class="admin-grid">
-                <div class="panel">
-                    <h3>🅿️ Bay management</h3>
-                    <p class="panel-note">Mark a bay broken to pull it out of rotation, or fixed to bring it back.</p>
-                    <table class="mini-table">
-                        <thead><tr><th>Bay</th><th>Type</th><th>Status</th><th></th></tr></thead>
-                        <tbody id="admin-bays-tbody"></tbody>
-                    </table>
-                    <div class="empty-note" id="admin-bays-empty"></div>
-                </div>
-
-                <div class="panel">
-                    <h3>💲 Pricing &amp; penalty rate</h3>
-                    <p class="panel-note">Hourly rate by vehicle type, plus the flat penalty charge.</p>
-                    <div id="pricing-rates"></div>
-                    <div class="rate-row">
-                        <label>Penalty ($)</label>
-                        <input type="number" step="0.5" min="0" id="penalty-rate">
-                    </div>
-                    <button class="btn-admin" onclick="savePricing()">Save pricing</button>
-                    <span class="saved-msg" id="pricing-saved-msg">Saved</span>
-                </div>
-
-                <div class="panel">
-                    <h3>👤 Staff accounts</h3>
-                    <p class="panel-note">Add or remove operator and admin logins.</p>
-                    <table class="mini-table">
-                        <thead><tr><th>Username</th><th>Role</th><th></th></tr></thead>
-                        <tbody id="admin-staff-tbody"></tbody>
-                    </table>
-                    <div class="empty-note" id="admin-staff-empty"></div>
-                    <div class="form-row" style="margin-top:12px;">
-                        <input type="text" id="new-staff-username" placeholder="Username">
-                        <input type="password" id="new-staff-password" placeholder="Password">
-                        <select id="new-staff-role">
-                            <option value="operator">Operator</option>
-                            <option value="admin">Admin</option>
-                        </select>
-                    </div>
-                    <button class="btn-admin" onclick="addStaff()">Add staff account</button>
-                </div>
-
-                <div class="panel export-panel">
-                    <h3>⬇️ Export logs</h3>
-                    <p class="panel-note">Download parking activity for a date range as a file.</p>
-                    <div class="form-row">
-                        <div class="export-field"><label>From</label><input type="text" id="export-from" placeholder="YYYY-MM-DD"></div>
-                        <div class="export-field"><label>To</label><input type="text" id="export-to" placeholder="YYYY-MM-DD"></div>
-                        <button class="btn-admin" onclick="exportLogs()">Export</button>
-                    </div>
-                </div>
+        <!-- ================= Component Tracker ================= -->
+        <section id="sec-components" class="tab-section">
+            <p class="section-intro">Live status of all hardware components. <strong>Click on a broken component to repair it.</strong></p>
+            <div id="components-dashboard">
+                <!-- Javascript will populate the grids here -->
             </div>
         </section>
 
@@ -792,7 +787,7 @@
             }
         }
 
-        // ---------- Revenue charts: real data only, honest empty/error states ----------
+        // ---------- Revenue charts ----------
         function hexToRgba(hex, alpha) {
             const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
             return `rgba(${r}, ${g}, ${b}, ${alpha})`;
@@ -873,176 +868,101 @@
             }
         }
 
-        // ---------- Settings: bay management ----------
-        async function fetchBaysAdmin() {
-            const res = await fetch('/api/admin/bays');
-            const tbody = document.getElementById('admin-bays-tbody');
-            const empty = document.getElementById('admin-bays-empty');
-            if (!tbody) return;
+        // ---------- Component Tracker Grid ----------
+        async function fetchAllComponents() {
+            try {
+                const res = await fetch('/api/admin/components');
+                const dashboard = document.getElementById('components-dashboard');
+                if (!dashboard) return;
 
-            if (res.status === 401 || res.status === 403) {
-                tbody.innerHTML = '';
-                empty.textContent = "You don't have permission to manage bays.";
-                empty.style.display = 'block';
-                return;
+                if (!res.ok) {
+                    dashboard.innerHTML = '<div class="empty-note" style="display:block; padding: 20px;">You don\'t have permission to view component status.</div>';
+                    return;
+                }
+
+                const data = await res.json();
+                dashboard.innerHTML = '';
+                
+                const types = [
+                    { key: 'BarrierGate', label: '🚧 Barrier Gates' },
+                    { key: 'ExhaustFan', label: '💨 Exhaust Fans' },
+                    { key: 'Light', label: '💡 Lights' },
+                    { key: 'Display', label: '📺 Displays' },
+                    { key: 'ParkingSpot', label: '🅿️ Parking Spots' }
+                ];
+
+                types.forEach(t => {
+                    const comps = data.components_by_type[t.key] || [];
+                    if (comps.length === 0) return;
+
+                    comps.sort((a, b) => {
+                        const numA = parseInt(a.name.replace(/\D/g, '')) || 0;
+                        const numB = parseInt(b.name.replace(/\D/g, '')) || 0;
+                        return numA - numB || a.name.localeCompare(b.name);
+                    });
+
+                    let brokenCount = comps.filter(c => c.broken).length;
+                    let statusBadge = brokenCount > 0 
+                        ? `<span class="badge" style="background:var(--warning-dim);color:var(--warning);">${brokenCount} broken</span>`
+                        : `<span class="badge badge-done">All OK</span>`;
+
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'component-group';
+                    
+                    let html = `<h3><span>${t.label}</span> ${statusBadge}</h3>`;
+                    html += `<div class="comp-grid">`;
+                    
+                    comps.forEach(c => {
+                        if (c.broken) {
+                            html += `
+                            <div class="comp-item broken" onclick="repairComponent('${c.name}', '${t.key}')" title="Click to fix">
+                                <strong>${c.name}</strong>
+                                <div class="repair-btn">CLICK TO FIX</div>
+                            </div>`;
+                        } else {
+                            html += `
+                            <div class="comp-item working">
+                                <strong>${c.name}</strong>
+                                <span style="opacity: 0.6; font-size: 10px;">WORKING</span>
+                            </div>`;
+                        }
+                    });
+                    
+                    html += `</div>`;
+                    groupDiv.innerHTML = html;
+                    dashboard.appendChild(groupDiv);
+                });
+
+            } catch (err) {
+                console.error("Failed to fetch components", err);
             }
-            if (!res.ok) return;
-            const data = await res.json();
-            tbody.innerHTML = '';
-
-            if (!data.bays || data.bays.length === 0) {
-                empty.textContent = 'No bays configured yet.';
-                empty.style.display = 'block';
-                return;
-            }
-            empty.style.display = 'none';
-
-            data.bays.forEach(b => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `<td><strong>${b.name}</strong></td>
-                                <td>${b.type}</td>
-                                <td>${b.broken ? '<span class="badge" style="background:rgba(240,173,78,0.16);color:#f0ad4e;">Under maintenance</span>' : '<span class="badge badge-done">OK</span>'}</td>
-                                <td><button class="btn-admin" onclick="toggleBroken('${b.name}')">${b.broken ? 'Mark fixed' : 'Mark broken'}</button></td>`;
-                tbody.appendChild(tr);
-            });
         }
 
-        async function toggleBroken(name) {
-            await fetch(`/api/admin/bays/${encodeURIComponent(name)}/toggle-broken`, { method: 'POST' });
-            fetchBaysAdmin();
-        }
-
-        // ---------- Settings: pricing ----------
-        async function fetchPricing() {
-            const res = await fetch('/api/admin/pricing');
-            const container = document.getElementById('pricing-rates');
-            if (!container) return;
-
-            if (res.status === 401 || res.status === 403) {
-                container.innerHTML = '<div class="empty-note" style="display:block;">You don\'t have permission to view pricing.</div>';
-                return;
-            }
-            if (!res.ok) return;
-            const data = await res.json();
-            container.innerHTML = '';
-
-            const rates = data.rates || {};
-            Object.keys(rates).forEach(type => {
-                const row = document.createElement('div');
-                row.className = 'rate-row';
-                row.innerHTML = `<label>${type} ($/hr)</label>
-                                  <input type="number" step="0.5" min="0" class="rate-input" data-type="${type}" value="${rates[type]}">`;
-                container.appendChild(row);
-            });
-
-            document.getElementById('penalty-rate').value = data.penalty != null ? data.penalty : 10;
-        }
-
-        async function savePricing() {
-            const rates = {};
-            document.querySelectorAll('.rate-input').forEach(input => {
-                rates[input.dataset.type] = parseFloat(input.value) || 0;
-            });
-            const penalty = parseFloat(document.getElementById('penalty-rate').value) || 0;
-
-            const res = await fetch('/api/admin/pricing', {
+        async function repairComponent(name, type) {
+            const res = await fetch(`/api/operator/components/repair`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ rates, penalty })
+                body: JSON.stringify({ name, type })
             });
-
-            if (res.status === 401 || res.status === 403) {
-                alert("RBAC System Access Denied:\nYou don't have permission to change pricing.");
-                return;
+            
+            if (res.ok) {
+                fetchAllComponents();
+            } else {
+                const data = await res.json();
+                alert("Repair failed: \n" + (data.message || 'Unauthorized'));
             }
-
-            const msg = document.getElementById('pricing-saved-msg');
-            msg.style.display = 'inline';
-            setTimeout(() => { msg.style.display = 'none'; }, 2000);
-        }
-
-        // ---------- Settings: staff ----------
-        async function fetchStaff() {
-            const res = await fetch('/api/admin/staff');
-            const tbody = document.getElementById('admin-staff-tbody');
-            const empty = document.getElementById('admin-staff-empty');
-            if (!tbody) return;
-
-            if (res.status === 401 || res.status === 403) {
-                tbody.innerHTML = '';
-                empty.textContent = "You don't have permission to manage staff accounts.";
-                empty.style.display = 'block';
-                return;
-            }
-            if (!res.ok) return;
-            const data = await res.json();
-            tbody.innerHTML = '';
-
-            if (!data.staff || data.staff.length === 0) {
-                empty.textContent = 'No staff accounts yet.';
-                empty.style.display = 'block';
-                return;
-            }
-            empty.style.display = 'none';
-
-            data.staff.forEach(s => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `<td>${s.username}</td>
-                                <td><span class="badge badge-${s.role}">${s.role}</span></td>
-                                <td><button class="btn-danger" onclick="removeStaff('${s.username}')">Remove</button></td>`;
-                tbody.appendChild(tr);
-            });
-        }
-
-        async function addStaff() {
-            const username = document.getElementById('new-staff-username').value.trim();
-            const password = document.getElementById('new-staff-password').value;
-            const role = document.getElementById('new-staff-role').value;
-            if (!username || !password) { alert('Enter a username and password.'); return; }
-
-            const res = await fetch('/api/admin/staff', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, role })
-            });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                alert(err.message || 'Could not add staff account.');
-                return;
-            }
-            document.getElementById('new-staff-username').value = '';
-            document.getElementById('new-staff-password').value = '';
-            fetchStaff();
-        }
-
-        async function removeStaff(username) {
-            if (!confirm(`Remove staff account "${username}"?`)) return;
-            await fetch(`/api/admin/staff/${encodeURIComponent(username)}`, { method: 'DELETE' });
-            fetchStaff();
-        }
-
-        // ---------- Settings: export ----------
-        function exportLogs() {
-            const from = document.getElementById('export-from').value.trim();
-            const to = document.getElementById('export-to').value.trim();
-            const params = new URLSearchParams();
-            if (from) params.set('from', from);
-            if (to) params.set('to', to);
-            const qs = params.toString();
-            window.location.href = `/api/admin/export/logs${qs ? '?' + qs : ''}`;
         }
 
         // ---------- Init ----------
         setInterval(fetchStatus, 1500);
         setInterval(fetchAuditLogs, 3000);
         setInterval(fetchRevenue, 30000);
+        setInterval(fetchAllComponents, 2500); // 轮询 Component 状态
 
         fetchWebhookLogs();
         fetchStatus();
         fetchRevenue();
-        fetchBaysAdmin();
-        fetchPricing();
-        fetchStaff();
+        fetchAllComponents();
     </script>
 </body>
 </html>
